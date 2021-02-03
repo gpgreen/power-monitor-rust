@@ -1,0 +1,36 @@
+[package]
+name = "power-monitor-rust"
+version = "0.1.0"
+authors = ["Greg Green <ggreen@bit-builder.com>"]
+edition = "2018"
+license = "GPL-3.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+panic-halt = "0.2.0"
+avr-device = "0.2.3"
+
+[dependencies.avr-hal-generic]
+git = "https://github.com/Rahix/avr-hal"
+rev = "206ff87bdc38afcffd9db1c9326c0d4d9487cb14"
+
+[dependencies.atmega328p-hal]
+git = "https://github.com/Rahix/avr-hal"
+rev = "206ff87bdc38afcffd9db1c9326c0d4d9487cb14"
+
+[dependencies.arduino-uno]
+git = "https://github.com/Rahix/avr-hal"
+rev = "206ff87bdc38afcffd9db1c9326c0d4d9487cb14"
+
+[profile.dev]
+panic = "abort"
+lto = true
+opt-level = "s"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+debug = true
+lto = true
+opt-level = "s"
