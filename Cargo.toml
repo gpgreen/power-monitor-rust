@@ -10,6 +10,7 @@ license = "GPL-3.0"
 [dependencies]
 panic-halt = "0.2.0"
 avr-device = "0.2.3"
+ufmt = "0.1.0"
 
 [dependencies.avr-hal-generic]
 git = "https://github.com/Rahix/avr-hal"
