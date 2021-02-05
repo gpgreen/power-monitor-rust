@@ -9,8 +9,13 @@ license = "GPL-3.0"
 
 [dependencies]
 panic-halt = "0.2.0"
-avr-device = "0.2.3"
 ufmt = "0.1.0"
+
+[dependencies.avr-device]
+#git = "https://github.com/gpgreen/avr-device"
+#rev = "48ccb06502ffbf2e823d659f6e367f15d2d1cf41"
+version = "0.2.3"
+features = ["atmega328p","rt"]
 
 [dependencies.avr-hal-generic]
 git = "https://github.com/Rahix/avr-hal"

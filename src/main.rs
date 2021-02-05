@@ -8,7 +8,7 @@
 
 use arduino_uno::prelude::*;
 use avr_device::interrupt;
-use core::cell::RefCell;
+use core::cell::{RefCell, UnsafeCell};
 use avr_hal_generic::port::mode::{Floating,Output,TriState};
 use ufmt;
 
@@ -28,6 +28,48 @@ use crate::button::button::{ButtonState, BUTTON_STATE_INIT};
 
 //const CPU_FREQUENCY_HZ: u64 = 8_000_000;
 
+//==========================================================
+// Wait Timeout
+
+// shared variable to hold wait timeout counter
+struct WaitTimeoutCounter(UnsafeCell<i8>);
+
+const WAIT_TIMEOUT_COUNTER_INIT: WaitTimeoutCounter = WaitTimeoutCounter(UnsafeCell::new(-1));
+
+impl WaitTimeoutCounter {
+    pub fn reset(&self, _cs: &interrupt::CriticalSection) {
+	unsafe { *self.0.get() = -1 };
+    }
+
+    pub fn increment(&self, _cs: &interrupt::CriticalSection) {
+	unsafe {
+	    let cnt = *self.0.get();
+	    if cnt >= 0 && cnt < i8::max_value() {
+		*self.0.get() += 1;
+	    }
+	}
+    }
+
+    pub fn start_timer(&self, _cs: &interrupt::CriticalSection) {
+	unsafe { *self.0.get() = 0 };
+    }
+    
+    pub fn timeout(&self, _cs: &interrupt::CriticalSection) -> bool {
+	unsafe { *self.0.get() >= 81 }
+    }
+}
+
+unsafe impl Sync for WaitTimeoutCounter {}
+
+static WAITCOUNTER: WaitTimeoutCounter = WAIT_TIMEOUT_COUNTER_INIT;
+
+//==========================================================
+// INT0 Flag
+
+static mut PENDINGINT0: bool = false;
+
+//==========================================================
+
 // shared variable to hold button pin, until grabbed by interrupt function
 static BUTTON_GPIO: interrupt::Mutex<RefCell<Option<ButtonPin<TriState>>>> =
     interrupt::Mutex::new(RefCell::new(None));
@@ -35,6 +77,8 @@ static BUTTON_GPIO: interrupt::Mutex<RefCell<Option<ButtonPin<TriState>>>> =
 // BUTTONSTATE is no longer 'mut' as it uses interior mutability,
 // therefore it also no longer requires unsafe blocks to access
 static BUTTONSTATE: ButtonState = BUTTON_STATE_INIT;
+
+//==========================================================
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
@@ -56,6 +100,8 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
     loop {}
 }
+
+//==========================================================
 
 struct LEDS {
     led1: LED1Pin<Output>,
@@ -105,6 +151,8 @@ impl LEDS {
     }
 }
 
+//==========================================================
+
 #[derive(Copy, Clone, PartialEq)]
 enum PowerStateMachine {
     Start,
@@ -124,6 +172,24 @@ enum PowerStateMachine {
     MCUOff,
     PowerDownEntry,
     PowerDownExit
+}
+
+fn change_state(new_state: PowerStateMachine,
+		state_memo: (PowerStateMachine, PowerStateMachine))
+		-> (PowerStateMachine, PowerStateMachine) {
+    if let PowerStateMachine::Start
+	| PowerStateMachine::Wait
+	| PowerStateMachine::SignaledOn
+	| PowerStateMachine::MCURunning
+	| PowerStateMachine::ADCNoiseExit
+	| PowerStateMachine::SignaledOff
+	| PowerStateMachine::MCUOff
+	| PowerStateMachine::PowerDownEntry
+	| PowerStateMachine::PowerDownExit = state_memo.0 {
+	    (new_state, state_memo.0)
+	} else {
+	    (new_state, state_memo.1)
+	}
 }
 
 impl PowerStateMachine {
@@ -161,6 +227,8 @@ fn send_tuple(state: (PowerStateMachine, PowerStateMachine),
     ufmt::uwriteln!(serial, "\r").void_unwrap();
 }
 
+//==========================================================
+
 enum ButtonRelease {
     Down,
     UpShort,
@@ -168,46 +236,104 @@ enum ButtonRelease {
 }
 
 fn test_button_release() -> ButtonRelease {
-    interrupt::free(move |cs| {
-	let state = BUTTONSTATE.is_up(cs);
-	let to = BUTTONSTATE.timeout(cs);
-	if state {
-	    BUTTONSTATE.reset(cs);
-	    if to {
+    interrupt::free(|cs| {
+	if BUTTONSTATE.is_up(cs) {
+	    let newstate = if BUTTONSTATE.timeout(cs) {
 		ButtonRelease::UpLong
 	    } else {
 		ButtonRelease::UpShort
-	    }
+	    };
+	    BUTTONSTATE.reset(cs);
+	    newstate
 	} else {
 	    ButtonRelease::Down
 	}
     })
 }
 
-fn change_state(new_state: PowerStateMachine, state: (PowerStateMachine, PowerStateMachine)) -> (PowerStateMachine, PowerStateMachine) {
-    let old_state = state.1;
-    if let PowerStateMachine::Start
-	| PowerStateMachine::Wait
-	| PowerStateMachine::SignaledOn
-	| PowerStateMachine::MCURunning
-	| PowerStateMachine::ADCNoiseExit
-	| PowerStateMachine::SignaledOff
-	| PowerStateMachine::MCUOffEntry
-	| PowerStateMachine::MCUOff
-	| PowerStateMachine::PowerDownExit = state.0 {
-	    (new_state, state.0)
-	} else {
-	    (new_state, old_state)
+//==========================================================
+
+fn power_down_entry(cpu: &avr_device::atmega328p::CPU,
+		    exint: &avr_device::atmega328p::EXINT,
+		    timer0: &avr_device::atmega328p::TC0) {
+    // set sleep mode
+    cpu.smcr.write(|w| w.sm().pdown());
+
+    // SHUTDOWN pin to input and pull-up on
+    //            SHUTDOWN_DIR &= ~(_BV(SHUTDOWN));
+    //            SHUTDOWN_PORT |= _BV(SHUTDOWN);
+
+    // modules power off
+    //            sensor_pre_power_down();
+    //            spi_pre_power_down();
+
+    // stop timer0 ovf interrupt
+    timer0.timsk0.write(|w| w.toie0().clear_bit());
+    
+    // set INTO interrupt
+    exint.eimsk.write(|w| w.int().bits(0b0000_0001));
+
+    // do the power down, if INT0 interrupt hasn't happened
+    // no other interrupts are important, as the Pi will
+    // be powered off in this state, so only need
+    // to detect button pushes
+    interrupt::disable();
+    unsafe {
+	if !core::ptr::read_volatile(&PENDINGINT0) {
+	    // sleep enable
+	    cpu.smcr.write(|w| w.se().set_bit());
+	    interrupt::enable();
+	    // sleep cpu
+	    avr_device::asm::sleep();
 	}
+	core::ptr::write_volatile(&mut PENDINGINT0, false);
+	interrupt::enable();
+    }
+
+    // sleep disable
+    cpu.smcr.write(|w| w.se().clear_bit());
 }
+
+//==========================================================
+
+fn power_down_exit(exint: &avr_device::atmega328p::EXINT,
+		    timer0: &avr_device::atmega328p::TC0) {
+    
+    // stop INTO interrupt
+    exint.eimsk.write(|w| w.int().bits(0b0000_0000));
+
+    // set timer0 ovf interrupt
+    timer0.timsk0.write(|w| w.toie0().set_bit());
+
+    //spi_post_power_down();
+    //sensor_post_power_down();
+    // SHUTDOWN pin pull up off, to output
+    //SHUTDOWN_PORT &= ~(_BV(SHUTDOWN));
+    //SHUTDOWN_DIR |= _BV(SHUTDOWN);
+
+    // start wakeup timer
+    interrupt::free(|cs| { WAITCOUNTER.start_timer(cs); });
+}
+
+//==========================================================
+
+#[repr(C)]
+struct PowerReg {
+    pub prr: u8,
+}
+
+//==========================================================
 
 #[arduino_uno::entry]
 fn main() -> ! {
     let dp = arduino_uno::Peripherals::take().unwrap();
 
+    // turn off unused modules
+    let prrreg = 0x64 as *mut PowerReg;
+    unsafe { (*prrreg).prr = 0b1100_1000 };
+
     let mut portb = dp.PORTB.split();
     let mut portd = dp.PORTD.split();
-    let timer0 = dp.TC0;
     
     // LEDs, output
     let mut leds = LEDS {
@@ -218,21 +344,23 @@ fn main() -> ! {
 	led5: portd.pd3.into_output(&mut portd.ddr),
     };
     
-    // MCU_RUNNING, input, no pullup
+    // MCU_RUNNING, input, external pulldown
     let mcu_running_pin = portb.pb1;
 	
     // ENABLE, output
     let mut enable_pin = portd.pd4.into_output(&mut portd.ddr);
-    enable_pin.set_low().void_unwrap();
     
     // SHUTDOWN, output
     let mut shutdown_pin = portb.pb6.into_output(&mut portb.ddr);
-    shutdown_pin.set_low().void_unwrap();
 
-    // BUTTON, tri-state input and output
+    // EEPROM, output, external pullup
+    let _eeprom_pin = portb.pb7.into_output(&mut portb.ddr);
+
+    // BUTTON, tri-state input and output, external pullup
     let button_pin = portd.pd2.into_tri_state(&mut portd.ddr);
 
     // setup Timer0, CK/256, overflow interrupt enabled
+    let timer0 = dp.TC0;
     timer0.tccr0b.write(|w| w.cs0().prescale_256());
     timer0.timsk0.write(|w| w.toie0().set_bit());
 
@@ -243,46 +371,56 @@ fn main() -> ! {
 	portd.pd1.into_output(&mut portd.ddr),
 	57600.into_baudrate(),
     );
+
+    let cpu = dp.CPU;
+    let exint = dp.EXINT;
     
-    interrupt::free(move |cs| {
-	// transfer to static variable inside interrupt
+    interrupt::free(|cs| {
+	// transfer to static variable
 	*BUTTON_GPIO.borrow(cs).borrow_mut() = Some(button_pin);
     });
 
-    // starting value of FSM
+    // start value of FSM
     let mut machine_state = (PowerStateMachine::Start, PowerStateMachine::Start);
     let mut prev_state = machine_state;
 
-    ufmt::writeln!(&mut serial, "PowerMonitor Start\r").void_unwrap();
-    
     // enable interrupts
     unsafe {
 	interrupt::enable();
     }
 
+    ufmt::uwriteln!(&mut serial, "PowerMonitor Start\r").void_unwrap();
+    
     loop {
+	// FSM
 	machine_state = match machine_state.0 {
 	    PowerStateMachine::Start => {
+		interrupt::free(|cs| { WAITCOUNTER.start_timer(cs); });
 		change_state(PowerStateMachine::WaitEntry, machine_state)
 	    }
 	    PowerStateMachine::WaitEntry => {
+		leds.on(2); leds.off(3); leds.off(4);
 		enable_pin.set_low().void_unwrap();
 		shutdown_pin.set_low().void_unwrap();
 		change_state(PowerStateMachine::Wait, machine_state)
 	    }
 	    PowerStateMachine::Wait => {
-		if interrupt::free(move |cs| { BUTTONSTATE.is_down(cs) }) {
+		if interrupt::free(|cs| { BUTTONSTATE.is_down(cs) }) {
 		    change_state(PowerStateMachine::ButtonPress, machine_state)
+		} else if interrupt::free(|cs| { WAITCOUNTER.timeout(cs) }) {
+		    change_state(PowerStateMachine::MCUOffEntry, machine_state)
 		} else {
 		    machine_state
 		}
 	    }
 	    PowerStateMachine::SignaledOnEntry => {
+		leds.off(2); leds.on(3); leds.off(4);
+		interrupt::free(|cs| { WAITCOUNTER.reset(cs); });
 		enable_pin.set_high().void_unwrap();
 		change_state(PowerStateMachine::SignaledOn, machine_state)
 	    }
 	    PowerStateMachine::SignaledOn => {
-		if interrupt::free(move |cs| { BUTTONSTATE.is_down(cs) }) {
+		if interrupt::free(|cs| { BUTTONSTATE.is_down(cs) }) {
 		    change_state(PowerStateMachine::ButtonPress, machine_state)
 		} else if mcu_running_pin.is_high().unwrap() {
 		    change_state(PowerStateMachine::MCURunningEntry, machine_state)
@@ -291,10 +429,11 @@ fn main() -> ! {
 		}
 	    }
 	    PowerStateMachine::MCURunningEntry => {
+		leds.off(2); leds.off(3); leds.on(4);
 		change_state(PowerStateMachine::MCURunning, machine_state)
 	    }
 	    PowerStateMachine::MCURunning => {
-		if interrupt::free(move |cs| { BUTTONSTATE.is_down(cs) }) {
+		if interrupt::free(|cs| { BUTTONSTATE.is_down(cs) }) {
 		    change_state(PowerStateMachine::ButtonPress, machine_state)
 		} else if mcu_running_pin.is_low().unwrap() {
 		    // this can happen if the user turns off the Pi using it's OS
@@ -304,20 +443,20 @@ fn main() -> ! {
 		}
 	    }
 	    PowerStateMachine::SignaledOffEntry => {
-		leds.on(1);
+		leds.on(1); leds.off(2); leds.off(3); leds.off(4);
 		shutdown_pin.set_high().void_unwrap();
-		change_state(PowerStateMachine::SignaledOffEntry, machine_state)
+		change_state(PowerStateMachine::SignaledOff, machine_state)
 	    }
 	    PowerStateMachine::SignaledOff => {
 		if mcu_running_pin.is_low().unwrap() {
-		    leds.off(1);
-		    shutdown_pin.set_low().void_unwrap();
 		    change_state(PowerStateMachine::MCUOffEntry, machine_state)
 		} else {
 		    machine_state
 		}
 	    }
 	    PowerStateMachine::MCUOffEntry => {
+		leds.off(1); leds.off(2); leds.off(3); leds.off(4);
+		shutdown_pin.set_low().void_unwrap();
 		enable_pin.set_low().void_unwrap();
 		change_state(PowerStateMachine::MCUOff, machine_state)
 	    }
@@ -331,13 +470,15 @@ fn main() -> ! {
 		change_state(PowerStateMachine::MCURunningEntry, machine_state)
 	    }
 	    PowerStateMachine::PowerDownEntry => {
+		power_down_entry(&cpu, &exint, &timer0);
 		change_state(PowerStateMachine::PowerDownExit, machine_state)
 	    }
 	    PowerStateMachine::PowerDownExit => {
+		power_down_exit(&exint, &timer0);
 		change_state(PowerStateMachine::WaitEntry, machine_state)
 	    }
 	    PowerStateMachine::ButtonPress => {
-		interrupt::free(move |cs| { BUTTONSTATE.start_timer(cs) });
+		interrupt::free(|cs| { BUTTONSTATE.start_timer(cs) });
 		change_state(PowerStateMachine::ButtonRelease, machine_state)
 	    }
 	    PowerStateMachine::ButtonRelease => {
@@ -376,36 +517,50 @@ fn main() -> ! {
 		}
 	    }
 	};
+	// check and see if machine state has changed, if so, send it via serial port
 	if prev_state.0 != machine_state.0 || prev_state.1 != machine_state.1 {
 	    send_tuple(machine_state, &mut serial);
 	    prev_state = machine_state;
 	}
 
-	//	if interrupt::free(move |cs| { BUTTONSTATE.is_down(cs) }) {
-//	    interrupt::free(move |cs| { BUTTONSTATE.start_timer(cs) });
-//	    leds.on_all();
-//	} else if interrupt::free(move |cs| { BUTTONSTATE.is_up(cs) })
-//	    && interrupt::free(move |cs| { BUTTONSTATE.timeout(cs) }) {
-//		interrupt::free(move |cs| { BUTTONSTATE.reset(cs) });
-//		leds.off_all();
-//	    }
 //	arduino_uno::delay_us(10000);
-//	ufmt::uwriteln!(&mut serial, "Hello!\r").void_unwrap();
     }
 }
+
+//==========================================================
 
 // interrupt handler for the Timer0 overflow
 #[interrupt(atmega328p)]
 fn TIMER0_OVF() {
+    // static variable to hold the button pin
     static mut BUTTONPIN: Option<ButtonPin<TriState>> = None;
-    interrupt::free(|cs| {
+
+    // create unneeded interrupt context for static functions
+    // unneeded because we are in interrupt and can't be interrupted
+    // again in avr
+    interrupt::free(move |cs| {
+
+	WAITCOUNTER.increment(cs);
+
 	unsafe {
+	    // pin already transferred to this function
 	    if let Some(but) = &BUTTONPIN {
 		BUTTONSTATE.timer0_overflow(but.is_high().unwrap(), cs);
 	    }
 	    else {
+		// transfer pin to this function
 		BUTTONPIN.replace(BUTTON_GPIO.borrow(cs).replace(None).unwrap());
 	    }
 	}
     });
+}
+
+//==========================================================
+
+// interrupt handler for INT0
+#[interrupt(atmega328p)]
+fn INT0() {
+    unsafe {
+	core::ptr::write_volatile(&mut PENDINGINT0, true);
+    }
 }
