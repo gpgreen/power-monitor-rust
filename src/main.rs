@@ -1,3 +1,6 @@
+//!
+//! Copyright 2020 Greg Green <ggreen@bit-builder.com>
+//!
 #![no_std]
 #![no_main]
 #![feature(abi_avr_interrupt)]
@@ -6,27 +9,14 @@
 
 //extern crate panic_halt;
 
-use arduino_uno::prelude::*;
 use avr_device::interrupt;
+use core::ops::DerefMut;
 use core::cell::{RefCell, UnsafeCell};
-use avr_hal_generic::port::mode::{Floating,Output,TriState};
 use ufmt;
 
-use atmega328p_hal as hal;
-use hal::port::portb::PB0 as LED1Pin;
-use hal::port::portd::PD7 as LED2Pin;
-use hal::port::portd::PD6 as LED3Pin;
-use hal::port::portd::PD5 as LED4Pin;
-use hal::port::portd::PD3 as LED5Pin;
-use hal::port::portd::PD2 as ButtonPin;
-
-pub use crate::hal::pac;
-pub use crate::hal::usart;
-
-mod button;
-use crate::button::button::{ButtonState, BUTTON_STATE_INIT};
-
-//const CPU_FREQUENCY_HZ: u64 = 8_000_000;
+use chart_plotter_hat::prelude::*;
+use chart_plotter_hat::hal as hal;
+use hal::port::mode::{Floating,TriState};
 
 //==========================================================
 // Wait Timeout
@@ -71,8 +61,11 @@ static mut PENDINGINT0: bool = false;
 //==========================================================
 
 // shared variable to hold button pin, until grabbed by interrupt function
-static BUTTON_GPIO: interrupt::Mutex<RefCell<Option<ButtonPin<TriState>>>> =
+static BUTTON_GPIO: interrupt::Mutex<RefCell<Option<chart_plotter_hat::hal::port::portd::PD2<TriState>>>> =
     interrupt::Mutex::new(RefCell::new(None));
+
+mod button;
+use crate::button::{ButtonState, BUTTON_STATE_INIT};
 
 // BUTTONSTATE is no longer 'mut' as it uses interior mutability,
 // therefore it also no longer requires unsafe blocks to access
@@ -80,12 +73,20 @@ static BUTTONSTATE: ButtonState = BUTTON_STATE_INIT;
 
 //==========================================================
 
+mod spi;
+use crate::spi::SpiState;
+
+static SPISTATEHANDLE: interrupt::Mutex<RefCell<Option<SpiState>>> =
+    interrupt::Mutex::new(RefCell::new(None));
+
+//==========================================================
+
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    let mut serial: arduino_uno::Serial<arduino_uno::hal::port::mode::Floating> =
+    let mut serial: chart_plotter_hat::Serial<hal::port::mode::Floating> =
         unsafe { core::mem::MaybeUninit::uninit().assume_init() };
 
-    ufmt::uwriteln!(&mut serial, "Firmware panic!\r").void_unwrap();
+   ufmt::uwriteln!(&mut serial, "Firmware panic!\r").void_unwrap();
 
     if let Some(loc) = info.location() {
         ufmt::uwriteln!(
@@ -99,56 +100,6 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     }
 
     loop {}
-}
-
-//==========================================================
-
-struct LEDS {
-    led1: LED1Pin<Output>,
-    led2: LED2Pin<Output>,
-    led3: LED3Pin<Output>,
-    led4: LED4Pin<Output>,
-    led5: LED5Pin<Output>,
-}
-
-impl LEDS {
-    fn on_all(&mut self) {
-	self.led1.set_high().void_unwrap();
-	self.led2.set_high().void_unwrap();
-	self.led3.set_high().void_unwrap();
-	self.led4.set_high().void_unwrap();
-	self.led5.set_high().void_unwrap();
-    }
-    
-    fn off_all(&mut self) {
-	self.led1.set_low().void_unwrap();
-	self.led2.set_low().void_unwrap();
-	self.led3.set_low().void_unwrap();
-	self.led4.set_low().void_unwrap();
-	self.led5.set_low().void_unwrap();
-    }
-    
-    fn on(&mut self, n: u8) {
-	match n {
-	    1 => self.led1.set_high().void_unwrap(),
-	    2 => self.led2.set_high().void_unwrap(),
-	    3 => self.led3.set_high().void_unwrap(),
-	    4 => self.led4.set_high().void_unwrap(),
-	    5 => self.led5.set_high().void_unwrap(),
-	    _ => (),
-	}
-    }
-
-    fn off(&mut self, n: u8) {
-	match n {
-	    1 => self.led1.set_low().void_unwrap(),
-	    2 => self.led2.set_low().void_unwrap(),
-	    3 => self.led3.set_low().void_unwrap(),
-	    4 => self.led4.set_low().void_unwrap(),
-	    5 => self.led5.set_low().void_unwrap(),
-	    _ => (),
-	}
-    }
 }
 
 //==========================================================
@@ -193,7 +144,7 @@ fn change_state(new_state: PowerStateMachine,
 }
 
 impl PowerStateMachine {
-    fn send(&self, serial: &mut hal::usart::Usart0::<hal::clock::MHz8, Floating>) {
+    fn send(&self, serial: &mut chart_plotter_hat::Serial<Floating>) {
 	let s = match self {
 	    PowerStateMachine::Start => { r"Start" }
 	    PowerStateMachine::WaitEntry => { r"WaitEntry" }
@@ -219,7 +170,7 @@ impl PowerStateMachine {
 }
 
 fn send_tuple(state: (PowerStateMachine, PowerStateMachine),
-	      serial: &mut hal::usart::Usart0::<hal::clock::MHz8, Floating>) {
+	      serial: &mut chart_plotter_hat::Serial<Floating>) {
     ufmt::uwrite!(serial, "Current:").void_unwrap();
     state.0.send(serial);
     ufmt::uwrite!(serial, " Previous:").void_unwrap();
@@ -253,9 +204,9 @@ fn test_button_release() -> ButtonRelease {
 
 //==========================================================
 
-fn power_down_entry(cpu: &avr_device::atmega328p::CPU,
-		    exint: &avr_device::atmega328p::EXINT,
-		    timer0: &avr_device::atmega328p::TC0) {
+fn power_down_entry(cpu: &chart_plotter_hat::pac::CPU,
+		    exint: &chart_plotter_hat::pac::EXINT,
+		    timer0: &chart_plotter_hat::pac::TC0) {
     // set sleep mode
     cpu.smcr.write(|w| w.sm().pdown());
 
@@ -264,14 +215,21 @@ fn power_down_entry(cpu: &avr_device::atmega328p::CPU,
     //            SHUTDOWN_PORT |= _BV(SHUTDOWN);
 
     // modules power off
+    interrupt::free(|cs| {
+	if let Some(ref mut ss) = SPISTATEHANDLE.borrow(cs).borrow_mut().deref_mut() {
+	    ss.pre_power_down(cs);
+	}
     //            sensor_pre_power_down();
-    //            spi_pre_power_down();
-
+    });
+    
+    // turn off clocks
+    cpu.prr.write(|w| w.prspi().clear_bit());
+    
     // stop timer0 ovf interrupt
     timer0.timsk0.write(|w| w.toie0().clear_bit());
     
     // set INTO interrupt
-    exint.eimsk.write(|w| w.int().bits(0b0000_0001));
+    exint.eimsk.write(|w| w.int0().set_bit());
 
     // do the power down, if INT0 interrupt hasn't happened
     // no other interrupts are important, as the Pi will
@@ -285,9 +243,11 @@ fn power_down_entry(cpu: &avr_device::atmega328p::CPU,
 	    interrupt::enable();
 	    // sleep cpu
 	    avr_device::asm::sleep();
+	} else {
+	    // INT0 pending
+	    core::ptr::write_volatile(&mut PENDINGINT0, false);
+	    interrupt::enable();
 	}
-	core::ptr::write_volatile(&mut PENDINGINT0, false);
-	interrupt::enable();
     }
 
     // sleep disable
@@ -296,17 +256,25 @@ fn power_down_entry(cpu: &avr_device::atmega328p::CPU,
 
 //==========================================================
 
-fn power_down_exit(exint: &avr_device::atmega328p::EXINT,
-		    timer0: &avr_device::atmega328p::TC0) {
+fn power_down_exit(cpu: &chart_plotter_hat::pac::CPU,
+		   exint: &chart_plotter_hat::pac::EXINT,
+		   timer0: &chart_plotter_hat::pac::TC0) {
     
     // stop INTO interrupt
-    exint.eimsk.write(|w| w.int().bits(0b0000_0000));
+    exint.eimsk.write(|w| w.int0().clear_bit());
 
     // set timer0 ovf interrupt
     timer0.timsk0.write(|w| w.toie0().set_bit());
 
-    //spi_post_power_down();
-    //sensor_post_power_down();
+    // turn on clocks
+    cpu.prr.write(|w| w.prspi().set_bit());
+
+    interrupt::free(|cs| {
+	if let Some(ref mut ss) = SPISTATEHANDLE.borrow(cs).borrow_mut().deref_mut() {
+	    ss.post_power_down(cs);
+	}
+	//            sensor_pre_power_down();
+    });
     // SHUTDOWN pin pull up off, to output
     //SHUTDOWN_PORT &= ~(_BV(SHUTDOWN));
     //SHUTDOWN_DIR |= _BV(SHUTDOWN);
@@ -317,67 +285,68 @@ fn power_down_exit(exint: &avr_device::atmega328p::EXINT,
 
 //==========================================================
 
-#[repr(C)]
-struct PowerReg {
-    pub prr: u8,
-}
-
-//==========================================================
-
-#[arduino_uno::entry]
+#[hal::entry]
 fn main() -> ! {
-    let dp = arduino_uno::Peripherals::take().unwrap();
+    let dp = chart_plotter_hat::Peripherals::take().unwrap();
 
     // turn off unused modules
-    let prrreg = 0x64 as *mut PowerReg;
-    unsafe { (*prrreg).prr = 0b1100_1000 };
+    let cpu = dp.CPU;
+    cpu.prr.write(|w| {
+	w.prtim1().clear_bit();
+	w.prtim2().clear_bit();
+	w.prtwi().clear_bit()
+    });
 
-    let mut portb = dp.PORTB.split();
-    let mut portd = dp.PORTD.split();
+    let exint = dp.EXINT;
+    
+    let mut pins = chart_plotter_hat::Pins::new(dp.PORTB, dp.PORTC, dp.PORTD);
     
     // LEDs, output
-    let mut leds = LEDS {
-	led1: portb.pb0.into_output(&mut portb.ddr),
-	led2: portd.pd7.into_output(&mut portd.ddr),
-	led3: portd.pd6.into_output(&mut portd.ddr),
-	led4: portd.pd5.into_output(&mut portd.ddr),
-	led5: portd.pd3.into_output(&mut portd.ddr),
-    };
+    let mut led1 = pins.led1.into_output(&mut pins.ddr);
+    let mut led2 = pins.led2.into_output(&mut pins.ddr);
+    let mut led3 = pins.led3.into_output(&mut pins.ddr);
+    let mut led4 = pins.led4.into_output(&mut pins.ddr);
+    let mut led5 = pins.led5.into_output(&mut pins.ddr);
     
     // MCU_RUNNING, input, external pulldown
-    let mcu_running_pin = portb.pb1;
+    let mcu_running_pin = pins.mr;
 	
     // ENABLE, output
-    let mut enable_pin = portd.pd4.into_output(&mut portd.ddr);
+    let mut enable_pin = pins.en.into_output(&mut pins.ddr);
     
     // SHUTDOWN, output
-    let mut shutdown_pin = portb.pb6.into_output(&mut portb.ddr);
-
-    // EEPROM, output, external pullup
-    let _eeprom_pin = portb.pb7.into_output(&mut portb.ddr);
+    let mut shutdown_pin = pins.shutdown.into_output(&mut pins.ddr);
 
     // BUTTON, tri-state input and output, external pullup
-    let button_pin = portd.pd2.into_tri_state(&mut portd.ddr);
-
+    let button_pin = pins.button.into_tri_state(&mut pins.ddr);
+    
     // setup Timer0, CK/256, overflow interrupt enabled
     let timer0 = dp.TC0;
     timer0.tccr0b.write(|w| w.cs0().prescale_256());
     timer0.timsk0.write(|w| w.toie0().set_bit());
 
     // setup serial
-    let mut serial = hal::usart::Usart0::<hal::clock::MHz8, Floating>::new(
+    let mut serial = chart_plotter_hat::Serial::<Floating>::new(
 	dp.USART0,
-	portd.pd0,
-	portd.pd1.into_output(&mut portd.ddr),
+	pins.rx,
+	pins.tx.into_output(&mut pins.ddr),
 	57600.into_baudrate(),
     );
 
-    let cpu = dp.CPU;
-    let exint = dp.EXINT;
+    // setup spi
+    let sck = pins.sck.into_pull_up_input(&mut pins.ddr);
+    let miso = pins.miso.into_output(&mut pins.ddr);
+    let mosi = pins.mosi.into_pull_up_input(&mut pins.ddr);
+    let cs = pins.cs.into_pull_up_input(&mut pins.ddr);
+    // EEPROM, output, external pullup
+    let eeprom_pin = pins.ep.into_output(&mut pins.ddr);
+
+    let spi_state = SpiState::new(dp.SPI, sck, miso, mosi, cs, eeprom_pin);
     
     interrupt::free(|cs| {
 	// transfer to static variable
 	*BUTTON_GPIO.borrow(cs).borrow_mut() = Some(button_pin);
+	SPISTATEHANDLE.borrow(cs).replace(Some(spi_state));
     });
 
     // start value of FSM
@@ -399,7 +368,9 @@ fn main() -> ! {
 		change_state(PowerStateMachine::WaitEntry, machine_state)
 	    }
 	    PowerStateMachine::WaitEntry => {
-		leds.on(2); leds.off(3); leds.off(4);
+		led2.set_high().void_unwrap();
+		led3.set_low().void_unwrap();
+		led4.set_low().void_unwrap();
 		enable_pin.set_low().void_unwrap();
 		shutdown_pin.set_low().void_unwrap();
 		change_state(PowerStateMachine::Wait, machine_state)
@@ -414,7 +385,9 @@ fn main() -> ! {
 		}
 	    }
 	    PowerStateMachine::SignaledOnEntry => {
-		leds.off(2); leds.on(3); leds.off(4);
+		led2.set_low().void_unwrap();
+		led3.set_high().void_unwrap();
+		led4.set_low().void_unwrap();
 		interrupt::free(|cs| { WAITCOUNTER.reset(cs); });
 		enable_pin.set_high().void_unwrap();
 		change_state(PowerStateMachine::SignaledOn, machine_state)
@@ -429,7 +402,9 @@ fn main() -> ! {
 		}
 	    }
 	    PowerStateMachine::MCURunningEntry => {
-		leds.off(2); leds.off(3); leds.on(4);
+		led2.set_low().void_unwrap();
+		led3.set_low().void_unwrap();
+		led4.set_high().void_unwrap();
 		change_state(PowerStateMachine::MCURunning, machine_state)
 	    }
 	    PowerStateMachine::MCURunning => {
@@ -443,7 +418,10 @@ fn main() -> ! {
 		}
 	    }
 	    PowerStateMachine::SignaledOffEntry => {
-		leds.on(1); leds.off(2); leds.off(3); leds.off(4);
+		led1.set_high().void_unwrap();
+		led2.set_low().void_unwrap();
+		led3.set_low().void_unwrap();
+		led4.set_low().void_unwrap();
 		shutdown_pin.set_high().void_unwrap();
 		change_state(PowerStateMachine::SignaledOff, machine_state)
 	    }
@@ -455,7 +433,10 @@ fn main() -> ! {
 		}
 	    }
 	    PowerStateMachine::MCUOffEntry => {
-		leds.off(1); leds.off(2); leds.off(3); leds.off(4);
+		led1.set_low().void_unwrap();
+		led2.set_low().void_unwrap();
+		led3.set_low().void_unwrap();
+		led4.set_low().void_unwrap();
 		shutdown_pin.set_low().void_unwrap();
 		enable_pin.set_low().void_unwrap();
 		change_state(PowerStateMachine::MCUOff, machine_state)
@@ -474,7 +455,7 @@ fn main() -> ! {
 		change_state(PowerStateMachine::PowerDownExit, machine_state)
 	    }
 	    PowerStateMachine::PowerDownExit => {
-		power_down_exit(&exint, &timer0);
+		power_down_exit(&cpu, &exint, &timer0);
 		change_state(PowerStateMachine::WaitEntry, machine_state)
 	    }
 	    PowerStateMachine::ButtonPress => {
@@ -523,17 +504,17 @@ fn main() -> ! {
 	    prev_state = machine_state;
 	}
 
-//	arduino_uno::delay_us(10000);
+//	chart_plotter_hat::delay_us(10000);
     }
 }
 
 //==========================================================
 
-// interrupt handler for the Timer0 overflow
+// interrupt handler for Timer0 overflow
 #[interrupt(atmega328p)]
 fn TIMER0_OVF() {
     // static variable to hold the button pin
-    static mut BUTTONPIN: Option<ButtonPin<TriState>> = None;
+    static mut BUTTONPIN: Option<chart_plotter_hat::hal::port::portd::PD2<TriState>> = None;
 
     // create unneeded interrupt context for static functions
     // unneeded because we are in interrupt and can't be interrupted
@@ -563,4 +544,19 @@ fn INT0() {
     unsafe {
 	core::ptr::write_volatile(&mut PENDINGINT0, true);
     }
+}
+
+//==========================================================
+
+// interrupt handler for SPI Serial Transmission Complete
+#[interrupt(atmega328p)]
+fn SPI_STC() {
+    // create unneeded interrupt context for static functions
+    // unneeded because we are in interrupt and can't be interrupted
+    // again in avr
+    interrupt::free(move |cs| {
+	if let Some(ref mut ss) = SPISTATEHANDLE.borrow(cs).borrow_mut().deref_mut() {
+	    ss.serial_transmission_complete(cs);
+	}
+    });
 }

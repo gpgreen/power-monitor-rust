@@ -6,16 +6,15 @@ edition = "2018"
 license = "GPL-3.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+default = ["rt"]
+rt = ["atmega328p-hal/rt"]
 
 [dependencies]
 panic-halt = "0.2.0"
 ufmt = "0.1.0"
-
-[dependencies.avr-device]
-#git = "https://github.com/gpgreen/avr-device"
-#rev = "48ccb06502ffbf2e823d659f6e367f15d2d1cf41"
-version = "0.2.3"
-features = ["atmega328p","rt"]
+chart-plotter-hat = "0.1.0"
+avr-device = "0.2.3"
 
 [dependencies.avr-hal-generic]
 git = "https://github.com/Rahix/avr-hal"
@@ -24,10 +23,11 @@ rev = "206ff87bdc38afcffd9db1c9326c0d4d9487cb14"
 [dependencies.atmega328p-hal]
 git = "https://github.com/Rahix/avr-hal"
 rev = "206ff87bdc38afcffd9db1c9326c0d4d9487cb14"
+features = ["atmega328p"]
 
-[dependencies.arduino-uno]
-git = "https://github.com/Rahix/avr-hal"
-rev = "206ff87bdc38afcffd9db1c9326c0d4d9487cb14"
+[patch.crates-io]
+chart-plotter-hat = { path = "/spare/export/src/rust/src/chart-plotter-hat" }
+avr-device = { path = "/spare/export/src/rust/src/avr-device" }
 
 [profile.dev]
 panic = "abort"

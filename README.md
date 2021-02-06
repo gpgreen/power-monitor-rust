@@ -1,4 +1,38 @@
-# Power Monitor firmwre for Chart Plotter Hat
+# Power Monitor firmware for Chart Plotter Hat
+
+Firmware for ATmega328P that monitors a push button to turn on/off
+a switching power supply. Supplies a shutdown signal to another MCU
+so that it can shutdown cleanly before the power supply is switched
+off.
+
+Also implements ADC measurements in response to SPI requests.
+
+Intended for use with Raspberry PI boat computer project. The
+corresponding hardware design is at: ![Chart Plotter Hat](https://github.com/gpgreen/chart_plotter_hat)
+
+## Raspberry Pi scripts
+
+The script `shutdown_monitor.py` is used to control and monitor
+the GPIO pins on the Raspberry Pi to work in concert with this
+firmware. This script is copied to /usr/bin. A systemd service file is
+`shutdown_monitor.service` and is copied to /lib/systemd/service.
+
+Enabling and starting the service using systemd
+```
+systemctl enable shutdown_monitor.service
+systemctl start shutdown_monitor.service
+```
+
+To disable the service from starting at boot
+```
+systemctl disable shutdown_monitor.service
+```
+
+## Code
+
+![state machine for power monitoring](StateMachine.png)
+
+Diagram made using [gaphor](https://gaphor.readthedocs.io/en/latest/)
 
 ## Build instructions
 
@@ -10,14 +44,29 @@ rustup toolchain install nightly-2021-01-07
 Then run:
 
 ```
-cargo +nightly-2021-01-07 build --target avr-atmega328p.json -Z build-std=core --release
+cargo +nightly-2021-01-07 build --release
 ```
 
-The final ELF executable file will then be available at `target/avr-atmega328p/release/template-bin.elf`.
+The final ELF executable file will then be available at `target/avr-atmega328p/release/power-monitor-rust.elf`.
+
+## ATMega328P fuse settings
+The fuses are changed from the default and need to be updated
+```
+avrdude -p atmega328p -c <your programmer here> -U lfuse:w:0xc2:m -U hfuse:w:0xdf:m -U efuse:w:0xff:m
+```
+
+## Firmware Load
+The compiled firmware (power-monitor-rust.hex) can be programmed into the hardware using
+```
+avrdude -p atmega328p -c <your programmer here> -U flash:w:power-monitor-rust.hex
+```
+
+This can also be done with the makefile target 'program', or `make
+program`
 
 ## Chart Plotter Hat Hardware Changes
 
-Rev B
+- Rev B
 LED1 attached to PB0
 LED removed from SHUTDOWN
 SHUTDOWN added pulldown
@@ -26,11 +75,11 @@ MCU_RUNNING added pulldown
 LC circuit added to AVCC
 Optional 12V ADC measurement to ADC7
 
-Rev A
+- Rev A
 Original
 
-## PINOUTS
-
+## PIN LAYOUT
+```
                 ATmega328P-28P3            
             +--------------------+         
             |                    |         
@@ -50,7 +99,7 @@ Original
        LED1-|14 PB0        PB1 15|-MCU_RUNNING
             |                    |         
             +--------------------+         
-         
+            
                    ATmega328P-32A
             +--------------------------+        
             |                          |        
@@ -72,5 +121,7 @@ Original
            -|11 PD7              PC6 29|-RESET  
             |                          |        
             +--------------------------+        
+```
 
-
+## License
+power-monitor-rust is licensed under the `GNU General Public License v3.0 or later`. See [LICENSE](LICENSE) for more info.
