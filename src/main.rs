@@ -1,5 +1,5 @@
 //!
-//! Copyright 2020 Greg Green <ggreen@bit-builder.com>
+//! Copyright 2021 Greg Green <ggreen@bit-builder.com>
 //!
 #![no_std]
 #![no_main]
@@ -115,8 +115,8 @@ enum PowerStateMachine {
     SignaledOn,
     MCURunningEntry,
     MCURunning,
-    ADCNoiseEntry,
-    ADCNoiseExit,
+//    ADCNoiseEntry,
+//    ADCNoiseExit,
     SignaledOffEntry,
     SignaledOff,
     MCUOffEntry,
@@ -132,7 +132,7 @@ fn change_state(new_state: PowerStateMachine,
 	| PowerStateMachine::Wait
 	| PowerStateMachine::SignaledOn
 	| PowerStateMachine::MCURunning
-	| PowerStateMachine::ADCNoiseExit
+//	| PowerStateMachine::ADCNoiseExit
 	| PowerStateMachine::SignaledOff
 	| PowerStateMachine::MCUOff
 	| PowerStateMachine::PowerDownEntry
@@ -155,8 +155,8 @@ impl PowerStateMachine {
 	    PowerStateMachine::SignaledOn => { r"SignaledOn" }
 	    PowerStateMachine::MCURunningEntry => { r"MCURunningEntry" }
 	    PowerStateMachine::MCURunning => { r"MCURunning" }
-	    PowerStateMachine::ADCNoiseEntry => { r"ADCNoiseEntry" }
-	    PowerStateMachine::ADCNoiseExit => { r"ADCNoiseExit" }
+//	    PowerStateMachine::ADCNoiseEntry => { r"ADCNoiseEntry" }
+//	    PowerStateMachine::ADCNoiseExit => { r"ADCNoiseExit" }
 	    PowerStateMachine::SignaledOffEntry => { r"SignaledOffEntry" }
 	    PowerStateMachine::SignaledOff => { r"SignaledOff" }
 	    PowerStateMachine::MCUOffEntry => { r"MCUOffEntry" }
@@ -306,7 +306,7 @@ fn main() -> ! {
     let mut led2 = pins.led2.into_output(&mut pins.ddr);
     let mut led3 = pins.led3.into_output(&mut pins.ddr);
     let mut led4 = pins.led4.into_output(&mut pins.ddr);
-    let mut led5 = pins.led5.into_output(&mut pins.ddr);
+    let led5 = pins.led5.into_output(&mut pins.ddr);
     
     // MCU_RUNNING, input, external pulldown
     let mcu_running_pin = pins.mr;
@@ -339,13 +339,15 @@ fn main() -> ! {
     let mosi = pins.mosi.into_pull_up_input(&mut pins.ddr);
     let cs = pins.cs.into_pull_up_input(&mut pins.ddr);
     // EEPROM, output, external pullup
-    let eeprom_pin = pins.ep.into_output(&mut pins.ddr);
+    let eeprom = pins.ep.into_output(&mut pins.ddr);
 
-    let spi_state = SpiState::new(dp.SPI, sck, miso, mosi, cs, eeprom_pin);
-    
+    let mut spi_state = SpiState::new(dp.SPI, sck, miso, mosi, cs, eeprom, led5);
     interrupt::free(|cs| {
 	// transfer to static variable
 	*BUTTON_GPIO.borrow(cs).borrow_mut() = Some(button_pin);
+
+	spi_state.initialize(cs);
+	// transfer to static variable
 	SPISTATEHANDLE.borrow(cs).replace(Some(spi_state));
     });
 
@@ -444,12 +446,12 @@ fn main() -> ! {
 	    PowerStateMachine::MCUOff => {
 		change_state(PowerStateMachine::PowerDownEntry, machine_state)
 	    }
-	    PowerStateMachine::ADCNoiseEntry => {
-		change_state(PowerStateMachine::ADCNoiseExit, machine_state)
-	    }
-	    PowerStateMachine::ADCNoiseExit => {
-		change_state(PowerStateMachine::MCURunningEntry, machine_state)
-	    }
+//	    PowerStateMachine::ADCNoiseEntry => {
+//		change_state(PowerStateMachine::ADCNoiseExit, machine_state)
+//	    }
+//	    PowerStateMachine::ADCNoiseExit => {
+//		change_state(PowerStateMachine::MCURunningEntry, machine_state)
+//	    }
 	    PowerStateMachine::PowerDownEntry => {
 		power_down_entry(&cpu, &exint, &timer0);
 		change_state(PowerStateMachine::PowerDownExit, machine_state)

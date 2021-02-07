@@ -1,3 +1,6 @@
+//!
+//! Copyright 2021 Greg Green <ggreen@bit-builder.com>
+//!
 use core::cell::UnsafeCell;
 use avr_hal_generic::avr_device::interrupt;
 
