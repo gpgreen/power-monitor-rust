@@ -45,13 +45,13 @@ use hal::port::mode::{Input,PullUp,Output};
 
 const MAJOR_VERSION: u8 = 0;
 const MINOR_VERSION: u8 = 4;
-#[cfg(debug_assertions)]
+#[cfg(feature = "proto-board")]
 pub const MAX_ADC_PINS_USIZE: usize = 6;
-#[cfg(debug_assertions)]
+#[cfg(feature = "proto-board")]
 pub const MAX_ADC_PINS_I8: i8 = 6;
-#[cfg(not(debug_assertions))]
+#[cfg(not(feature = "proto-board"))]
 pub const MAX_ADC_PINS_USIZE: usize = 8;
-#[cfg(not(debug_assertions))]
+#[cfg(not(feature = "proto-board"))]
 pub const MAX_ADC_PINS_I8: i8 = 8;
 
 //==========================================================
@@ -62,9 +62,9 @@ pub struct Registers {
 }
 
 pub const REGISTERS_INIT: Registers = Registers {
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "proto-board")]
     adc_values: [0xFEEF, 0xFEEF, 0xFEEF, 0xFEEF, 0xFEEF, 0xFEEF],
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(feature = "proto-board"))]
     adc_values: [0, 0, 0, 0, 0, 0, 0, 0],
     adc_channels_selected: 0};
 
@@ -116,38 +116,58 @@ pub struct SpiState {
     _sck: hal::port::portb::PB5<Input<PullUp>>,
     _miso: hal::port::portb::PB4<Output>,
     _mosi: hal::port::portb::PB3<Input<PullUp>>,
-    cs: hal::port::portb::PB2<Input<PullUp>>,
+    _cs: hal::port::portb::PB2<Input<PullUp>>,
     eeprom: hal::port::portb::PB7<Output>,
     state: SpiStateMachine,
     address: u8,
     send2: u8,
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "proto-board")]
     led5: hal::port::portd::PD3<Output>,
 }
 
 impl SpiState {
     
+    #[cfg(feature = "proto-board")]
     pub fn new(spidev: avr_device::atmega328p::SPI,
 	       sckpin: hal::port::portb::PB5<Input<PullUp>>,
 	       misopin: hal::port::portb::PB4<Output>,
 	       mosipin: hal::port::portb::PB3<Input<PullUp>>,
 	       cspin: hal::port::portb::PB2<Input<PullUp>>,
 	       eeprompin: hal::port::portb::PB7<Output>,
-	       #[cfg(debug_assertions)]
-	       ledpin: hal::port::portd::PD3<Output>,
+	       led5pin: hal::port::portd::PD3<Output>,
     ) -> SpiState {
 	SpiState {
 	    spi: spidev,
 	    _sck: sckpin,
 	    _miso: misopin,
 	    _mosi: mosipin,
-	    cs: cspin,
+	    _cs: cspin,
 	    eeprom: eeprompin,
 	    state: SpiStateMachine::Start,
 	    address: 0,
 	    send2: 0,
-	    #[cfg(debug_assertions)]
-	    led5: ledpin,
+	    led5: led5pin,
+	}
+    }
+
+    #[cfg(not(feature = "proto-board"))]
+    pub fn new(spidev: avr_device::atmega328p::SPI,
+	       sckpin: hal::port::portb::PB5<Input<PullUp>>,
+	       misopin: hal::port::portb::PB4<Output>,
+	       mosipin: hal::port::portb::PB3<Input<PullUp>>,
+	       cspin: hal::port::portb::PB2<Input<PullUp>>,
+	       eeprompin: hal::port::portb::PB7<Output>,
+    ) -> SpiState {
+	SpiState {
+	    spi: spidev,
+	    _sck: sckpin,
+	    _miso: misopin,
+	    _mosi: mosipin,
+	    _cs: cspin,
+	    eeprom: eeprompin,
+	    state: SpiStateMachine::Start,
+	    address: 0,
+	    send2: 0,
 	}
     }
 
@@ -161,10 +181,10 @@ impl SpiState {
 
     pub fn pre_power_down(&mut self, _cs: &interrupt::CriticalSection) {
 	self.spi.spcr.write(|w| {
-			    w.spe().clear_bit();
+	    w.spe().clear_bit();
 	    w.spie().clear_bit()
 	});
-	#[cfg(debug_assertions)]
+	#[cfg(feature = "proto-board")]
 	self.led5.set_low().void_unwrap();
     }
     
@@ -177,79 +197,76 @@ impl SpiState {
     }
     
     pub fn serial_transmission_complete(&mut self, cs: &interrupt::CriticalSection) {
-	let mut change_eeprom = EEPROMState::NoChange;
 	let recvd = self.spi.spdr.read().bits();
-	if !self.cs.is_high().unwrap() {
-	    match self.state {
-		SpiStateMachine::Start => {
-		    self.send2 = match recvd {
-			1 => {
-			    self.send_byte(0, cs);
-			    0
-			}
-			2 => {
-			    unsafe {
-				self.send_byte(REGISTERSHANDLE.get_adc_channels_selected(), cs);
-			    }
-			    0
-			}
-			3 => {
-			    self.send_byte(0, cs);
-			    0
-			}
-			4 => {
-			    self.send_byte(MAJOR_VERSION, cs);
-			    MINOR_VERSION
-			}
-			#[cfg(debug_assertions)]
-			16 | 17 | 18 | 19 | 20 | 21 | 22 => {
-			    unsafe {
-				self.send_byte(REGISTERSHANDLE.get_val_lo_byte(recvd - 16), cs);
-				REGISTERSHANDLE.get_val_hi_byte(recvd - 16)
-			    }
-			}
-			#[cfg(not(debug_assertions))]
-			16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 => {
-			    unsafe {
-				self.send_byte(REGISTERSHANDLE.get_val_lo_byte(recvd - 16), cs);
-				REGISTERSHANDLE.get_val_hi_byte(recvd - 16)
-			    }
-			}
-			_ => {
-			    self.send_byte(0, cs);
-			    0
-			}
-		    };
-		    self.address = recvd;
-		    self.state = SpiStateMachine::SecondByte;
-		    #[cfg(debug_assertions)]
-		    self.led5.set_high().void_unwrap();
-		}
-		SpiStateMachine::SecondByte => {
-		    self.send_byte(self.send2, cs);
-		    match self.address {
-			1 => {
-			    unsafe {
-				REGISTERSHANDLE.set_adc_channels_selected(recvd, cs);
-			    }
-			},
-			3 => {
-			    if recvd == 0 {
-				change_eeprom = EEPROMState::TurnOff;
-			    } else {
-				change_eeprom = EEPROMState::TurnOn;
-			    }
-			},
-			_ => (),
+	let mut change_eeprom = EEPROMState::NoChange;
+	match self.state {
+	    SpiStateMachine::Start => {
+		self.send2 = match recvd {
+		    1 => {
+			self.send_byte(0, cs);
+			0
 		    }
-		    self.state = SpiStateMachine::ThirdByte;
+		    2 => {
+			unsafe {
+			    self.send_byte(REGISTERSHANDLE.get_adc_channels_selected(), cs);
+			}
+			0
+		    }
+		    3 => {
+			self.send_byte(0, cs);
+			0
+		    }
+		    4 => {
+			self.send_byte(MAJOR_VERSION, cs);
+			MINOR_VERSION
+		    }
+		    16 | 17 | 18 | 19 | 20 | 21 | 22 => {
+			unsafe {
+			    self.send_byte(REGISTERSHANDLE.get_val_lo_byte(recvd - 16), cs);
+			    REGISTERSHANDLE.get_val_hi_byte(recvd - 16)
+			}
+		    }
+		    #[cfg(not(feature="proto-board"))]
+		    23 | 24 => {
+			unsafe {
+			    self.send_byte(REGISTERSHANDLE.get_val_lo_byte(recvd - 16), cs);
+			    REGISTERSHANDLE.get_val_hi_byte(recvd - 16)
+			}
+		    }
+		    _ => {
+			self.send_byte(0, cs);
+			0
+		    }
+		};
+		self.address = recvd;
+		self.state = SpiStateMachine::SecondByte;
+		#[cfg(feature = "proto-board")]
+		self.led5.set_high().void_unwrap();
+	    }
+	    SpiStateMachine::SecondByte => {
+		self.send_byte(self.send2, cs);
+		match self.address {
+		    1 => {
+			unsafe {
+			    REGISTERSHANDLE.set_adc_channels_selected(recvd, cs);
+			}
+		    },
+		    3 => {
+			if recvd == 0 {
+			    change_eeprom = EEPROMState::TurnOff;
+			} else {
+			    change_eeprom = EEPROMState::TurnOn;
+			}
+		    },
+		    _ => (),
 		}
-		SpiStateMachine::ThirdByte => {
-		    self.send_byte(0, cs);
-		    self.state = SpiStateMachine::Start;
-		    #[cfg(debug_assertions)]
-		    self.led5.set_low().void_unwrap();
-		}
+		self.state = SpiStateMachine::ThirdByte;
+	    }
+	    SpiStateMachine::ThirdByte => {
+		self.send_byte(0, cs);
+		self.state = SpiStateMachine::Start;
+		#[cfg(feature = "proto-board")]
+		self.led5.set_low().void_unwrap();
 	    }
 	}
 	match change_eeprom {

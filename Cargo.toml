@@ -7,15 +7,16 @@ license = "GPL-3.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
-default = ["rt"]
-rt = ["atmega328p-hal/rt"]
 
 [dependencies]
 panic-halt = "0.2.0"
 ufmt = "0.1.0"
-chart-plotter-hat = "0.1.0"
 avr-device = "0.2.3"
 nb = "1.0.0"
+
+[dependencies.chart-plotter-hat]
+version = "0.1.0"
+features = ["proto-board"]
 
 [dependencies.avr-hal-generic]
 git = "https://github.com/Rahix/avr-hal"

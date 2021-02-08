@@ -289,13 +289,13 @@ fn main() -> ! {
     
     // LEDs, output
     let mut led1 = pins.led1.into_output(&mut pins.ddr);
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "proto-board")]
     let mut led2 = pins.led2.into_output(&mut pins.ddr);
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "proto-board")]
     let mut led3 = pins.led3.into_output(&mut pins.ddr);
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "proto-board")]
     let mut led4 = pins.led4.into_output(&mut pins.ddr);
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "proto-board")]
     let led5 = pins.led5.into_output(&mut pins.ddr);
     
     // MCU_RUNNING, input, external pulldown
@@ -339,12 +339,11 @@ fn main() -> ! {
     let mut a3 = pins.a3.into_analog_input(&mut adc);
     let mut a4 = pins.a4.into_analog_input(&mut adc);
     let mut a5 = pins.a5.into_analog_input(&mut adc);
-    #[cfg(not(debug_assertions))]
-    let mut a6 = pins.a6.into_analog_input(&mut adc);
-    #[cfg(not(debug_assertions))]
-    let mut a7 = pins.a7.into_analog_input(&mut adc);
-    
+
+    #[cfg(feature = "proto-board")]
     let mut spi_state = SpiState::new(dp.SPI, sck, miso, mosi, cs, eeprom, led5);
+    #[cfg(not(feature = "proto-board"))]
+    let mut spi_state = SpiState::new(dp.SPI, sck, miso, mosi, cs, eeprom);
     interrupt::free(|cs| {
 	// transfer to static variable
 	*BUTTON_GPIO.borrow(cs).borrow_mut() = Some(button_pin);
@@ -376,11 +375,11 @@ fn main() -> ! {
 		change_state(PowerStateMachine::WaitEntry, machine_state)
 	    }
 	    PowerStateMachine::WaitEntry => {
-		#[cfg(debug_assertions)]
+		#[cfg(feature = "proto-board")]
 		led2.set_high().void_unwrap();
-		#[cfg(debug_assertions)]
+		#[cfg(feature = "proto-board")]
 		led3.set_low().void_unwrap();
-		#[cfg(debug_assertions)]
+		#[cfg(feature = "proto-board")]
 		led4.set_low().void_unwrap();
 		enable_pin.set_low().void_unwrap();
 		shutdown_pin.set_low().void_unwrap();
@@ -396,11 +395,11 @@ fn main() -> ! {
 		}
 	    }
 	    PowerStateMachine::SignaledOnEntry => {
-		#[cfg(debug_assertions)]
+		#[cfg(feature = "proto-board")]
 		led2.set_low().void_unwrap();
-		#[cfg(debug_assertions)]
+		#[cfg(feature = "proto-board")]
 		led3.set_high().void_unwrap();
-		#[cfg(debug_assertions)]
+		#[cfg(feature = "proto-board")]
 		led4.set_low().void_unwrap();
 		interrupt::free(|cs| { WAITCOUNTER.reset(cs); });
 		enable_pin.set_high().void_unwrap();
@@ -416,11 +415,11 @@ fn main() -> ! {
 		}
 	    }
 	    PowerStateMachine::MCURunningEntry => {
-		#[cfg(debug_assertions)]
+		#[cfg(feature = "proto-board")]
 		led2.set_low().void_unwrap();
-		#[cfg(debug_assertions)]
+		#[cfg(feature = "proto-board")]
 		led3.set_low().void_unwrap();
-		#[cfg(debug_assertions)]
+		#[cfg(feature = "proto-board")]
 		led4.set_high().void_unwrap();
 		change_state(PowerStateMachine::MCURunning, machine_state)
 	    }
@@ -436,11 +435,11 @@ fn main() -> ! {
 	    }
 	    PowerStateMachine::SignaledOffEntry => {
 		led1.set_high().void_unwrap();
-		#[cfg(debug_assertions)]
+		#[cfg(feature = "proto-board")]
 		led2.set_low().void_unwrap();
-		#[cfg(debug_assertions)]
+		#[cfg(feature = "proto-board")]
 		led3.set_low().void_unwrap();
-		#[cfg(debug_assertions)]
+		#[cfg(feature = "proto-board")]
 		led4.set_low().void_unwrap();
 		shutdown_pin.set_high().void_unwrap();
 		change_state(PowerStateMachine::SignaledOff, machine_state)
@@ -454,11 +453,11 @@ fn main() -> ! {
 	    }
 	    PowerStateMachine::MCUOffEntry => {
 		led1.set_low().void_unwrap();
-		#[cfg(debug_assertions)]
+		#[cfg(feature = "proto-board")]
 		led2.set_low().void_unwrap();
-		#[cfg(debug_assertions)]
+		#[cfg(feature = "proto-board")]
 		led3.set_low().void_unwrap();
-		#[cfg(debug_assertions)]
+		#[cfg(feature = "proto-board")]
 		led4.set_low().void_unwrap();
 		shutdown_pin.set_low().void_unwrap();
 		enable_pin.set_low().void_unwrap();
@@ -551,10 +550,10 @@ fn main() -> ! {
 		3 => adc.read(&mut a3),
 		4 => adc.read(&mut a4),
 		5 => adc.read(&mut a5),
-		#[cfg(not(debug_assertions))]
-		6 => adc.read(&mut a6),
-		#[cfg(not(debug_assertions))]
-		7 => adc.read(&mut a7),
+		#[cfg(not(feature = "proto-board"))]
+		6 => adc.read(&mut chart_plotter_hat::adc::channel::ADC6),
+		#[cfg(not(feature = "proto-board"))]
+		7 => adc.read(&mut chart_plotter_hat::adc::channel::ADC7),
 		_ => Err(nb::Error::WouldBlock),
 	    };
 	    match adc_result {
