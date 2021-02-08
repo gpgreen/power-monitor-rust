@@ -250,7 +250,7 @@ build: hex eep lss sym
 
 
 elf: target/avr-atmega328p/debug/$(TARGET).elf
-hex: $(TARGET).hex
+hex: target/avr-atmega328p/debug/$(TARGET).elf $(TARGET).hex
 eep: $(TARGET).eep
 lss: $(TARGET).lss
 sym: $(TARGET).sym

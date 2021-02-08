@@ -1,6 +1,41 @@
+//! This device will act as an SPI slave. It reads data from the
+//! internal ADC These can then be retrieved by a SPI master
+//! device. The device interface is register based. The SPI protocol
+//! involves the master sending a byte that is the register address,
+//! and then 2 more bytes. The slave returns a value in the second byte
+//! corresponding to that value
+//! IMPORTANT -- pulse BUTTON low for 5us to wake up AVR from ADC noise reduction
+//! mode or SPI won't be turned on.
+//! Delay 50us after pulse of BUTTON
+//! Delay 40us after sending the address byte before sending the next byte
+//! Delay 20us between the second and last byte
+//! Delay 10us after the last byte before trying another transaction.
+//! These delays should give the AVR enough time to respond to the interrupts
+//! and prepare for the next byte or transaction.
 //!
-//! Copyright 2021 Greg Green <ggreen@bit-builder.com>
+//! REGISTERS
+//! 0x01 = turn on adc channels
+//!   second byte contains flags of which adc channels are requested, ie if bit 0 is set
+//!   then adc channel 0 is requested and so on up to 6 channels.
+//!   Third byte is zero
+//! 0x02 = adc channels reading
+//!   second byte contains which channels are activated
+//!   third byte is zero
+//! 0x03 = turn on/off EEPROM pin
+//!   second byte contains 1 to turn on, 0 to turn off
+//!   third byte is zero
+//! 0x04 = firmware version
+//!  first byte is major, second byte is minor
+//! 0x10-0x16 = retrieve adc value on the channel [address - 16], ie address 0x10 is adc channel 0
 //!
+//! SPI protocol is implemented using a state machine, transitions happen during
+//! spi transfer complete interrupt, which happens when a byte is received over SPI
+//!
+//!   Start = waiting for address byte
+//!   SecondByte = waiting for second byte
+//!   ThirdByte = waiting for third byte
+//!
+
 use chart_plotter_hat::prelude::*;
 use avr_device::interrupt;
 use chart_plotter_hat::hal as hal;
@@ -10,7 +45,14 @@ use hal::port::mode::{Input,PullUp,Output};
 
 const MAJOR_VERSION: u8 = 0;
 const MINOR_VERSION: u8 = 4;
-const MAX_ADC_PINS_USIZE: usize = 6;
+#[cfg(debug_assertions)]
+pub const MAX_ADC_PINS_USIZE: usize = 6;
+#[cfg(debug_assertions)]
+pub const MAX_ADC_PINS_I8: i8 = 6;
+#[cfg(not(debug_assertions))]
+pub const MAX_ADC_PINS_USIZE: usize = 8;
+#[cfg(not(debug_assertions))]
+pub const MAX_ADC_PINS_I8: i8 = 8;
 
 //==========================================================
 
@@ -20,10 +62,13 @@ pub struct Registers {
 }
 
 pub const REGISTERS_INIT: Registers = Registers {
+    #[cfg(debug_assertions)]
     adc_values: [0xFEEF, 0xFEEF, 0xFEEF, 0xFEEF, 0xFEEF, 0xFEEF],
+    #[cfg(not(debug_assertions))]
+    adc_values: [0, 0, 0, 0, 0, 0, 0, 0],
     adc_channels_selected: 0};
 
-static mut REGISTERSHANDLE: Registers = REGISTERS_INIT;
+pub static mut REGISTERSHANDLE: Registers = REGISTERS_INIT;
 
 impl Registers {
 
@@ -73,10 +118,11 @@ pub struct SpiState {
     _mosi: hal::port::portb::PB3<Input<PullUp>>,
     cs: hal::port::portb::PB2<Input<PullUp>>,
     eeprom: hal::port::portb::PB7<Output>,
-    led5: hal::port::portd::PD3<Output>,
     state: SpiStateMachine,
     address: u8,
     send2: u8,
+    #[cfg(debug_assertions)]
+    led5: hal::port::portd::PD3<Output>,
 }
 
 impl SpiState {
@@ -87,7 +133,9 @@ impl SpiState {
 	       mosipin: hal::port::portb::PB3<Input<PullUp>>,
 	       cspin: hal::port::portb::PB2<Input<PullUp>>,
 	       eeprompin: hal::port::portb::PB7<Output>,
-	       ledpin: hal::port::portd::PD3<Output>) -> SpiState {
+	       #[cfg(debug_assertions)]
+	       ledpin: hal::port::portd::PD3<Output>,
+    ) -> SpiState {
 	SpiState {
 	    spi: spidev,
 	    _sck: sckpin,
@@ -95,10 +143,11 @@ impl SpiState {
 	    _mosi: mosipin,
 	    cs: cspin,
 	    eeprom: eeprompin,
-	    led5: ledpin,
 	    state: SpiStateMachine::Start,
 	    address: 0,
 	    send2: 0,
+	    #[cfg(debug_assertions)]
+	    led5: ledpin,
 	}
     }
 
@@ -111,7 +160,11 @@ impl SpiState {
     }
 
     pub fn pre_power_down(&mut self, _cs: &interrupt::CriticalSection) {
-	self.spi.spcr.write(|w| w.spe().clear_bit() );
+	self.spi.spcr.write(|w| {
+			    w.spe().clear_bit();
+	    w.spie().clear_bit()
+	});
+	#[cfg(debug_assertions)]
 	self.led5.set_low().void_unwrap();
     }
     
@@ -148,10 +201,18 @@ impl SpiState {
 			    self.send_byte(MAJOR_VERSION, cs);
 			    MINOR_VERSION
 			}
-			10 | 11 | 12 | 13 | 14 | 15 | 16 => {
+			#[cfg(debug_assertions)]
+			16 | 17 | 18 | 19 | 20 | 21 | 22 => {
 			    unsafe {
-				self.send_byte(REGISTERSHANDLE.get_val_lo_byte(recvd-10), cs);
-				REGISTERSHANDLE.get_val_hi_byte(recvd-10)
+				self.send_byte(REGISTERSHANDLE.get_val_lo_byte(recvd - 16), cs);
+				REGISTERSHANDLE.get_val_hi_byte(recvd - 16)
+			    }
+			}
+			#[cfg(not(debug_assertions))]
+			16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 => {
+			    unsafe {
+				self.send_byte(REGISTERSHANDLE.get_val_lo_byte(recvd - 16), cs);
+				REGISTERSHANDLE.get_val_hi_byte(recvd - 16)
 			    }
 			}
 			_ => {
@@ -160,28 +221,34 @@ impl SpiState {
 			}
 		    };
 		    self.address = recvd;
-		    self.led5.set_high().void_unwrap();
 		    self.state = SpiStateMachine::SecondByte;
+		    #[cfg(debug_assertions)]
+		    self.led5.set_high().void_unwrap();
 		}
 		SpiStateMachine::SecondByte => {
 		    self.send_byte(self.send2, cs);
-		    if self.address == 0x1 {
-			unsafe {
-			    REGISTERSHANDLE.set_adc_channels_selected(recvd, cs);
-			}
-		    } else if self.address == 0x3 {
-			if recvd == 0 {
-			    change_eeprom = EEPROMState::TurnOff;
-			} else {
-			    change_eeprom = EEPROMState::TurnOn;
-			}
+		    match self.address {
+			1 => {
+			    unsafe {
+				REGISTERSHANDLE.set_adc_channels_selected(recvd, cs);
+			    }
+			},
+			3 => {
+			    if recvd == 0 {
+				change_eeprom = EEPROMState::TurnOff;
+			    } else {
+				change_eeprom = EEPROMState::TurnOn;
+			    }
+			},
+			_ => (),
 		    }
 		    self.state = SpiStateMachine::ThirdByte;
 		}
 		SpiStateMachine::ThirdByte => {
 		    self.send_byte(0, cs);
-		    self.led5.set_low().void_unwrap();
 		    self.state = SpiStateMachine::Start;
+		    #[cfg(debug_assertions)]
+		    self.led5.set_low().void_unwrap();
 		}
 	    }
 	}

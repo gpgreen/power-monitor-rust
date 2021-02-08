@@ -1,6 +1,7 @@
-//!
-//! Copyright 2021 Greg Green <ggreen@bit-builder.com>
-//!
+//! firmware for chart plotter hat
+//! monitors a push button to turn on/off a Raspberry Pi
+//! Also implements adc conversions based on an spi interface
+
 #![no_std]
 #![no_main]
 #![feature(abi_avr_interrupt)]
@@ -12,6 +13,10 @@
 use avr_device::interrupt;
 use core::ops::DerefMut;
 use core::cell::{RefCell, UnsafeCell};
+use core::convert::TryInto;
+use nb;
+
+#[cfg(debug_assertions)]
 use ufmt;
 
 use chart_plotter_hat::prelude::*;
@@ -24,7 +29,8 @@ use hal::port::mode::{Floating,TriState};
 // shared variable to hold wait timeout counter
 struct WaitTimeoutCounter(UnsafeCell<i8>);
 
-const WAIT_TIMEOUT_COUNTER_INIT: WaitTimeoutCounter = WaitTimeoutCounter(UnsafeCell::new(-1));
+const WAIT_TIMEOUT_COUNTER_INIT: WaitTimeoutCounter
+    = WaitTimeoutCounter(UnsafeCell::new(-1));
 
 impl WaitTimeoutCounter {
     pub fn reset(&self, _cs: &interrupt::CriticalSection) {
@@ -61,7 +67,8 @@ static mut PENDINGINT0: bool = false;
 //==========================================================
 
 // shared variable to hold button pin, until grabbed by interrupt function
-static BUTTON_GPIO: interrupt::Mutex<RefCell<Option<chart_plotter_hat::hal::port::portd::PD2<TriState>>>> =
+static BUTTON_GPIO: interrupt::Mutex<
+	RefCell<Option<chart_plotter_hat::hal::port::portd::PD2<TriState>>>> =
     interrupt::Mutex::new(RefCell::new(None));
 
 mod button;
@@ -74,33 +81,10 @@ static BUTTONSTATE: ButtonState = BUTTON_STATE_INIT;
 //==========================================================
 
 mod spi;
-use crate::spi::SpiState;
+use crate::spi::{SpiState, REGISTERSHANDLE, MAX_ADC_PINS_I8};
 
 static SPISTATEHANDLE: interrupt::Mutex<RefCell<Option<SpiState>>> =
     interrupt::Mutex::new(RefCell::new(None));
-
-//==========================================================
-
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    let mut serial: chart_plotter_hat::Serial<hal::port::mode::Floating> =
-        unsafe { core::mem::MaybeUninit::uninit().assume_init() };
-
-   ufmt::uwriteln!(&mut serial, "Firmware panic!\r").void_unwrap();
-
-    if let Some(loc) = info.location() {
-        ufmt::uwriteln!(
-            &mut serial,
-            "  At {}:{}:{}\r",
-            loc.file(),
-            loc.line(),
-            loc.column(),
-        )
-        .void_unwrap();
-    }
-
-    loop {}
-}
 
 //==========================================================
 
@@ -143,6 +127,7 @@ fn change_state(new_state: PowerStateMachine,
 	}
 }
 
+#[cfg(debug_assertions)]
 impl PowerStateMachine {
     fn send(&self, serial: &mut chart_plotter_hat::Serial<Floating>) {
 	let s = match self {
@@ -169,6 +154,7 @@ impl PowerStateMachine {
 
 }
 
+#[cfg(debug_assertions)]
 fn send_tuple(state: (PowerStateMachine, PowerStateMachine),
 	      serial: &mut chart_plotter_hat::Serial<Floating>) {
     ufmt::uwrite!(serial, "Current:").void_unwrap();
@@ -303,9 +289,13 @@ fn main() -> ! {
     
     // LEDs, output
     let mut led1 = pins.led1.into_output(&mut pins.ddr);
+    #[cfg(debug_assertions)]
     let mut led2 = pins.led2.into_output(&mut pins.ddr);
+    #[cfg(debug_assertions)]
     let mut led3 = pins.led3.into_output(&mut pins.ddr);
+    #[cfg(debug_assertions)]
     let mut led4 = pins.led4.into_output(&mut pins.ddr);
+    #[cfg(debug_assertions)]
     let led5 = pins.led5.into_output(&mut pins.ddr);
     
     // MCU_RUNNING, input, external pulldown
@@ -333,7 +323,7 @@ fn main() -> ! {
 	57600.into_baudrate(),
     );
 
-    // setup spi
+    // SPI pins
     let sck = pins.sck.into_pull_up_input(&mut pins.ddr);
     let miso = pins.miso.into_output(&mut pins.ddr);
     let mosi = pins.mosi.into_pull_up_input(&mut pins.ddr);
@@ -341,6 +331,19 @@ fn main() -> ! {
     // EEPROM, output, external pullup
     let eeprom = pins.ep.into_output(&mut pins.ddr);
 
+    // setup adc, default is 128 clock division, and AVcc voltage reference
+    let mut adc = chart_plotter_hat::adc::Adc::new(dp.ADC, Default::default());
+    let mut a0 = pins.a0.into_analog_input(&mut adc);
+    let mut a1 = pins.a1.into_analog_input(&mut adc);
+    let mut a2 = pins.a2.into_analog_input(&mut adc);
+    let mut a3 = pins.a3.into_analog_input(&mut adc);
+    let mut a4 = pins.a4.into_analog_input(&mut adc);
+    let mut a5 = pins.a5.into_analog_input(&mut adc);
+    #[cfg(not(debug_assertions))]
+    let mut a6 = pins.a6.into_analog_input(&mut adc);
+    #[cfg(not(debug_assertions))]
+    let mut a7 = pins.a7.into_analog_input(&mut adc);
+    
     let mut spi_state = SpiState::new(dp.SPI, sck, miso, mosi, cs, eeprom, led5);
     interrupt::free(|cs| {
 	// transfer to static variable
@@ -355,12 +358,15 @@ fn main() -> ! {
     let mut machine_state = (PowerStateMachine::Start, PowerStateMachine::Start);
     let mut prev_state = machine_state;
 
+    let mut current_channel : i8 = -1;
+    
     // enable interrupts
     unsafe {
 	interrupt::enable();
     }
 
-    ufmt::uwriteln!(&mut serial, "PowerMonitor Start\r").void_unwrap();
+    #[cfg(debug_assertions)]
+    ufmt::uwriteln!(&mut serial, "\r\nPowerMonitor Start\r").void_unwrap();
     
     loop {
 	// FSM
@@ -370,8 +376,11 @@ fn main() -> ! {
 		change_state(PowerStateMachine::WaitEntry, machine_state)
 	    }
 	    PowerStateMachine::WaitEntry => {
+		#[cfg(debug_assertions)]
 		led2.set_high().void_unwrap();
+		#[cfg(debug_assertions)]
 		led3.set_low().void_unwrap();
+		#[cfg(debug_assertions)]
 		led4.set_low().void_unwrap();
 		enable_pin.set_low().void_unwrap();
 		shutdown_pin.set_low().void_unwrap();
@@ -387,8 +396,11 @@ fn main() -> ! {
 		}
 	    }
 	    PowerStateMachine::SignaledOnEntry => {
+		#[cfg(debug_assertions)]
 		led2.set_low().void_unwrap();
+		#[cfg(debug_assertions)]
 		led3.set_high().void_unwrap();
+		#[cfg(debug_assertions)]
 		led4.set_low().void_unwrap();
 		interrupt::free(|cs| { WAITCOUNTER.reset(cs); });
 		enable_pin.set_high().void_unwrap();
@@ -404,8 +416,11 @@ fn main() -> ! {
 		}
 	    }
 	    PowerStateMachine::MCURunningEntry => {
+		#[cfg(debug_assertions)]
 		led2.set_low().void_unwrap();
+		#[cfg(debug_assertions)]
 		led3.set_low().void_unwrap();
+		#[cfg(debug_assertions)]
 		led4.set_high().void_unwrap();
 		change_state(PowerStateMachine::MCURunning, machine_state)
 	    }
@@ -421,8 +436,11 @@ fn main() -> ! {
 	    }
 	    PowerStateMachine::SignaledOffEntry => {
 		led1.set_high().void_unwrap();
+		#[cfg(debug_assertions)]
 		led2.set_low().void_unwrap();
+		#[cfg(debug_assertions)]
 		led3.set_low().void_unwrap();
+		#[cfg(debug_assertions)]
 		led4.set_low().void_unwrap();
 		shutdown_pin.set_high().void_unwrap();
 		change_state(PowerStateMachine::SignaledOff, machine_state)
@@ -436,8 +454,11 @@ fn main() -> ! {
 	    }
 	    PowerStateMachine::MCUOffEntry => {
 		led1.set_low().void_unwrap();
+		#[cfg(debug_assertions)]
 		led2.set_low().void_unwrap();
+		#[cfg(debug_assertions)]
 		led3.set_low().void_unwrap();
+		#[cfg(debug_assertions)]
 		led4.set_low().void_unwrap();
 		shutdown_pin.set_low().void_unwrap();
 		enable_pin.set_low().void_unwrap();
@@ -502,10 +523,64 @@ fn main() -> ! {
 	};
 	// check and see if machine state has changed, if so, send it via serial port
 	if prev_state.0 != machine_state.0 || prev_state.1 != machine_state.1 {
+	    #[cfg(debug_assertions)]
 	    send_tuple(machine_state, &mut serial);
 	    prev_state = machine_state;
 	}
-
+	// handle adc readings
+	let channels = interrupt::free(|_cs|
+				       unsafe {
+					   REGISTERSHANDLE.get_adc_channels_selected()
+				       });
+	if channels != 0 {
+	    if current_channel == -1 {
+		let mut i = 0;
+		while i < MAX_ADC_PINS_I8 {
+		    if ((1 << i) & channels) == (1 << i) {
+			current_channel = i;
+			break;
+		    } else {
+			i += 1;
+		    }
+		}
+	    }
+	    let adc_result : core::result::Result<u16, _> = match current_channel {
+		0 => adc.read(&mut a0),
+		1 => adc.read(&mut a1),
+		2 => adc.read(&mut a2),
+		3 => adc.read(&mut a3),
+		4 => adc.read(&mut a4),
+		5 => adc.read(&mut a5),
+		#[cfg(not(debug_assertions))]
+		6 => adc.read(&mut a6),
+		#[cfg(not(debug_assertions))]
+		7 => adc.read(&mut a7),
+		_ => Err(nb::Error::WouldBlock),
+	    };
+	    match adc_result {
+		Ok(adc_reading) => {
+		    interrupt::free(|cs| unsafe {
+			REGISTERSHANDLE.set_value(
+			    current_channel.try_into().unwrap(), adc_reading, cs);
+		    });
+		    let mut i = current_channel + 1;
+		    while i != current_channel {
+			while i < MAX_ADC_PINS_I8 {
+			    if ((1 << i) & channels) == (1 << i) {
+				current_channel = i;
+				break;
+			    } else {
+				i += 1;
+			    }
+			}
+			if i == MAX_ADC_PINS_I8 {
+			    i = 0;
+			}
+		    };
+		},
+		Err(_) => (),
+	    }
+	}
 //	chart_plotter_hat::delay_us(10000);
     }
 }
