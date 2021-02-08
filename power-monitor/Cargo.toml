@@ -17,6 +17,7 @@ nb = "1.0.0"
 [dependencies.chart-plotter-hat]
 version = "0.1.0"
 features = ["proto-board"]
+path = "../chart-plotter-hat"
 
 [dependencies.avr-hal-generic]
 git = "https://github.com/Rahix/avr-hal"
@@ -28,7 +29,6 @@ rev = "206ff87bdc38afcffd9db1c9326c0d4d9487cb14"
 features = ["atmega328p"]
 
 [patch.crates-io]
-chart-plotter-hat = { path = "/spare/export/src/rust/src/chart-plotter-hat" }
 avr-device = { path = "/spare/export/src/rust/src/avr-device" }
 
 [profile.dev]

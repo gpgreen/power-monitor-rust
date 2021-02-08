@@ -1,0 +1,32 @@
+[package]
+name = "chart-plotter-hat"
+version = "0.1.0"
+authors = ["Greg Green <ggreen@bit-builder.com>"]
+edition = "2018"
+
+[features]
+default = ["rt"]
+rt = ["atmega328p-hal/rt"]
+proto-board = []
+
+[dependencies]
+ufmt = "0.1.0"
+
+[dependencies.avr-device]
+git = "https://github.com/Rahix/avr-device"
+rev = "ca6cad61f095e670be2cdcc39a198fc850d1fedc"
+features = ["atmega328p"]
+
+[dependencies.avr-hal-generic]
+git = "https://github.com/Rahix/avr-hal"
+rev = "206ff87bdc38afcffd9db1c9326c0d4d9487cb14"
+
+[dependencies.atmega328p-hal]
+git = "https://github.com/Rahix/avr-hal"
+rev = "206ff87bdc38afcffd9db1c9326c0d4d9487cb14"
+features = ["atmega328p", "adc-pins"]
+
+[dev-dependencies]
+panic-halt = "0.2.0"
+nb = "1.0.0"
+
