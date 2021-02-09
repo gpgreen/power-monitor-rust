@@ -6,12 +6,10 @@
 #![no_main]
 #![feature(abi_avr_interrupt)]
 
-// see uno-adc example to show how to get to A6 & A7 adc pins
-
-//extern crate panic_halt;
+extern crate panic_halt;
 
 use avr_device::interrupt;
-use core::ops::DerefMut;
+use core::ops::{Deref,DerefMut};
 use core::cell::{RefCell, UnsafeCell};
 use core::convert::TryInto;
 use nb;
@@ -21,7 +19,12 @@ use ufmt;
 
 use chart_plotter_hat::prelude::*;
 use chart_plotter_hat::hal as hal;
-use hal::port::mode::{Floating,TriState};
+use hal::port::mode::Floating;
+
+//==========================================================
+
+mod utility;
+use utility::*;
 
 //==========================================================
 // Wait Timeout
@@ -66,17 +69,13 @@ static mut PENDINGINT0: bool = false;
 
 //==========================================================
 
-// shared variable to hold button pin, until grabbed by interrupt function
-static BUTTON_GPIO: interrupt::Mutex<
-	RefCell<Option<chart_plotter_hat::hal::port::portd::PD2<TriState>>>> =
-    interrupt::Mutex::new(RefCell::new(None));
-
 mod button;
-use crate::button::{ButtonState, BUTTON_STATE_INIT};
+use crate::button::{ButtonRelease, ButtonState};
 
-// BUTTONSTATE is no longer 'mut' as it uses interior mutability,
+// BUTTONSTATEHANDLE is no longer 'mut' as it uses interior mutability,
 // therefore it also no longer requires unsafe blocks to access
-static BUTTONSTATE: ButtonState = BUTTON_STATE_INIT;
+static BUTTONSTATEHANDLE: interrupt::Mutex<RefCell<Option<ButtonState>>>
+    = interrupt::Mutex::new(RefCell::new(None));
 
 //==========================================================
 
@@ -105,8 +104,7 @@ enum PowerStateMachine {
     SignaledOff,
     MCUOffEntry,
     MCUOff,
-    PowerDownEntry,
-    PowerDownExit
+    PowerDown,
 }
 
 fn change_state(new_state: PowerStateMachine,
@@ -119,8 +117,7 @@ fn change_state(new_state: PowerStateMachine,
 //	| PowerStateMachine::ADCNoiseExit
 	| PowerStateMachine::SignaledOff
 	| PowerStateMachine::MCUOff
-	| PowerStateMachine::PowerDownEntry
-	| PowerStateMachine::PowerDownExit = state_memo.0 {
+	| PowerStateMachine::PowerDown = state_memo.0 {
 	    (new_state, state_memo.0)
 	} else {
 	    (new_state, state_memo.1)
@@ -146,8 +143,7 @@ impl PowerStateMachine {
 	    PowerStateMachine::SignaledOff => { r"SignaledOff" }
 	    PowerStateMachine::MCUOffEntry => { r"MCUOffEntry" }
 	    PowerStateMachine::MCUOff => { r"MCUOff" }
-	    PowerStateMachine::PowerDownEntry => { r"PowerDownEntry" }
-	    PowerStateMachine::PowerDownExit => { r"PowerDownExit" }
+	    PowerStateMachine::PowerDown => { r"PowerDown" }
 	};
 	ufmt::uwrite!(serial, "{}", s).void_unwrap();
     }
@@ -166,107 +162,86 @@ fn send_tuple(state: (PowerStateMachine, PowerStateMachine),
 
 //==========================================================
 
-enum ButtonRelease {
-    Down,
-    UpShort,
-    UpLong,
-}
-
-fn test_button_release() -> ButtonRelease {
-    interrupt::free(|cs| {
-	if BUTTONSTATE.is_up(cs) {
-	    let newstate = if BUTTONSTATE.timeout(cs) {
-		ButtonRelease::UpLong
-	    } else {
-		ButtonRelease::UpShort
-	    };
-	    BUTTONSTATE.reset(cs);
-	    newstate
-	} else {
-	    ButtonRelease::Down
-	}
-    })
-}
-
-//==========================================================
-
-fn power_down_entry(cpu: &chart_plotter_hat::pac::CPU,
-		    exint: &chart_plotter_hat::pac::EXINT,
-		    timer0: &chart_plotter_hat::pac::TC0) {
-    // set sleep mode
-    cpu.smcr.write(|w| w.sm().pdown());
-
+fn power_down_mode(cpu: &chart_plotter_hat::pac::CPU,
+		   exint: &chart_plotter_hat::pac::EXINT,
+		   timer0: &chart_plotter_hat::pac::TC0,
+		   adc: chart_plotter_hat::adc::Adc) -> chart_plotter_hat::adc::Adc {
     // SHUTDOWN pin to input and pull-up on
     //            SHUTDOWN_DIR &= ~(_BV(SHUTDOWN));
     //            SHUTDOWN_PORT |= _BV(SHUTDOWN);
 
+    // release hal adc so we can turn it off
+    let adcp = adc.release();
+    
     // modules power off
     interrupt::free(|cs| {
 	if let Some(ref mut ss) = SPISTATEHANDLE.borrow(cs).borrow_mut().deref_mut() {
 	    ss.pre_power_down(cs);
 	}
-    //            sensor_pre_power_down();
+	adcp.adcsra.reset();
     });
     
     // turn off clocks
-    cpu.prr.write(|w| w.prspi().clear_bit());
+    cpu.prr.modify(|_, w| {
+	w.prspi().set_bit();
+	w.pradc().set_bit()
+    });
     
     // stop timer0 ovf interrupt
-    timer0.timsk0.write(|w| w.toie0().clear_bit());
+    timer0.timsk0.modify(|_, w| w.toie0().clear_bit());
     
     // set INTO interrupt
-    exint.eimsk.write(|w| w.int0().set_bit());
+    exint.eimsk.modify(|_, w| w.int0().set_bit());
 
     // do the power down, if INT0 interrupt hasn't happened
     // no other interrupts are important, as the Pi will
     // be powered off in this state, so only need
     // to detect button pushes
+    cpu.smcr.write(|w| w.sm().pdown());
     interrupt::disable();
     unsafe {
 	if !core::ptr::read_volatile(&PENDINGINT0) {
 	    // sleep enable
-	    cpu.smcr.write(|w| w.se().set_bit());
+	    cpu.smcr.modify(|_, w| w.se().set_bit());
 	    interrupt::enable();
 	    // sleep cpu
 	    avr_device::asm::sleep();
+	    // sleep disable
+	    cpu.smcr.modify(|_, w| w.se().clear_bit());
 	} else {
 	    // INT0 pending
 	    core::ptr::write_volatile(&mut PENDINGINT0, false);
-	    interrupt::enable();
 	}
+	interrupt::enable();
     }
 
-    // sleep disable
-    cpu.smcr.write(|w| w.se().clear_bit());
-}
-
-//==========================================================
-
-fn power_down_exit(cpu: &chart_plotter_hat::pac::CPU,
-		   exint: &chart_plotter_hat::pac::EXINT,
-		   timer0: &chart_plotter_hat::pac::TC0) {
-    
     // stop INTO interrupt
-    exint.eimsk.write(|w| w.int0().clear_bit());
+    exint.eimsk.modify(|_, w| w.int0().clear_bit());
 
     // set timer0 ovf interrupt
-    timer0.timsk0.write(|w| w.toie0().set_bit());
+    timer0.timsk0.modify(|_, w| w.toie0().set_bit());
 
     // turn on clocks
-    cpu.prr.write(|w| w.prspi().set_bit());
-
+    cpu.prr.modify(|_, w| {
+	w.prspi().clear_bit();
+	w.pradc().clear_bit()
+    });
+    
     interrupt::free(|cs| {
 	if let Some(ref mut ss) = SPISTATEHANDLE.borrow(cs).borrow_mut().deref_mut() {
 	    ss.post_power_down(cs);
 	}
-	//            sensor_pre_power_down();
     });
+
+    // start wakeup timer
+    interrupt::free(|cs| { WAITCOUNTER.start_timer(cs); });
+
     // SHUTDOWN pin pull up off, to output
     //SHUTDOWN_PORT &= ~(_BV(SHUTDOWN));
     //SHUTDOWN_DIR |= _BV(SHUTDOWN);
 
-    // start wakeup timer
-    interrupt::free(|cs| { WAITCOUNTER.start_timer(cs); });
+    // start adc again
+    chart_plotter_hat::adc::Adc::new(adcp, Default::default())
 }
 
 //==========================================================
@@ -278,11 +253,18 @@ fn main() -> ! {
     // turn off unused modules
     let cpu = dp.CPU;
     cpu.prr.write(|w| {
-	w.prtim1().clear_bit();
-	w.prtim2().clear_bit();
-	w.prtwi().clear_bit()
+	w.prtim1().set_bit();
+	w.prtim2().set_bit();
+	w.prtwi().set_bit()
     });
-
+    #[cfg(not(debug_assertions))]
+    cpu.prr.write(|w| {
+	w.prusart().set_bit();
+    });
+    // turn off analog comparator
+    let ac = dp.AC;
+    ac.acsr.write(|w| w.acd().set_bit() );
+    
     let exint = dp.EXINT;
     
     let mut pins = chart_plotter_hat::Pins::new(dp.PORTB, dp.PORTC, dp.PORTD);
@@ -316,6 +298,7 @@ fn main() -> ! {
     timer0.timsk0.write(|w| w.toie0().set_bit());
 
     // setup serial
+    #[cfg(debug_assertions)]
     let mut serial = chart_plotter_hat::Serial::<Floating>::new(
 	dp.USART0,
 	pins.rx,
@@ -344,9 +327,12 @@ fn main() -> ! {
     let mut spi_state = SpiState::new(dp.SPI, sck, miso, mosi, cs, eeprom, led5);
     #[cfg(not(feature = "proto-board"))]
     let mut spi_state = SpiState::new(dp.SPI, sck, miso, mosi, cs, eeprom);
+
+    let button_state = ButtonState::new(button_pin);
+    
     interrupt::free(|cs| {
 	// transfer to static variable
-	*BUTTON_GPIO.borrow(cs).borrow_mut() = Some(button_pin);
+	BUTTONSTATEHANDLE.borrow(cs).replace(Some(button_state));
 
 	spi_state.initialize(cs);
 	// transfer to static variable
@@ -367,6 +353,15 @@ fn main() -> ! {
     #[cfg(debug_assertions)]
     ufmt::uwriteln!(&mut serial, "\r\nPowerMonitor Start\r").void_unwrap();
     
+    #[cfg(debug_assertions)]
+    ufmt::uwrite!(serial, "spcr:").void_unwrap();
+    #[cfg(debug_assertions)]
+    send_reg(&mut serial, 0x4c);
+    #[cfg(debug_assertions)]
+    ufmt::uwrite!(serial, "prr:").void_unwrap();
+    #[cfg(debug_assertions)]
+    send_reg(&mut serial, 0x64);
+
     loop {
 	// FSM
 	machine_state = match machine_state.0 {
@@ -386,7 +381,11 @@ fn main() -> ! {
 		change_state(PowerStateMachine::Wait, machine_state)
 	    }
 	    PowerStateMachine::Wait => {
-		if interrupt::free(|cs| { BUTTONSTATE.is_down(cs) }) {
+		if interrupt::free(|cs| {
+		    if let Some(bs) = BUTTONSTATEHANDLE.borrow(cs).borrow().deref() {
+			bs.is_down(cs)
+		    } else {false}
+		}) {
 		    change_state(PowerStateMachine::ButtonPress, machine_state)
 		} else if interrupt::free(|cs| { WAITCOUNTER.timeout(cs) }) {
 		    change_state(PowerStateMachine::MCUOffEntry, machine_state)
@@ -406,7 +405,11 @@ fn main() -> ! {
 		change_state(PowerStateMachine::SignaledOn, machine_state)
 	    }
 	    PowerStateMachine::SignaledOn => {
-		if interrupt::free(|cs| { BUTTONSTATE.is_down(cs) }) {
+		if interrupt::free(|cs| {
+		    if let Some(bs) = BUTTONSTATEHANDLE.borrow(cs).borrow().deref() {
+			bs.is_down(cs)
+		    } else { false }
+		}) {
 		    change_state(PowerStateMachine::ButtonPress, machine_state)
 		} else if mcu_running_pin.is_high().unwrap() {
 		    change_state(PowerStateMachine::MCURunningEntry, machine_state)
@@ -424,7 +427,11 @@ fn main() -> ! {
 		change_state(PowerStateMachine::MCURunning, machine_state)
 	    }
 	    PowerStateMachine::MCURunning => {
-		if interrupt::free(|cs| { BUTTONSTATE.is_down(cs) }) {
+		if interrupt::free(|cs| {
+		    if let Some(bs) = BUTTONSTATEHANDLE.borrow(cs).borrow().deref() {
+			bs.is_down(cs)
+		    } else { false }
+		}) {
 		    change_state(PowerStateMachine::ButtonPress, machine_state)
 		} else if mcu_running_pin.is_low().unwrap() {
 		    // this can happen if the user turns off the Pi using it's OS
@@ -464,7 +471,7 @@ fn main() -> ! {
 		change_state(PowerStateMachine::MCUOff, machine_state)
 	    }
 	    PowerStateMachine::MCUOff => {
-		change_state(PowerStateMachine::PowerDownEntry, machine_state)
+		change_state(PowerStateMachine::PowerDown, machine_state)
 	    }
 //	    PowerStateMachine::ADCNoiseEntry => {
 //		change_state(PowerStateMachine::ADCNoiseExit, machine_state)
@@ -472,20 +479,33 @@ fn main() -> ! {
 //	    PowerStateMachine::ADCNoiseExit => {
 //		change_state(PowerStateMachine::MCURunningEntry, machine_state)
 //	    }
-	    PowerStateMachine::PowerDownEntry => {
-		power_down_entry(&cpu, &exint, &timer0);
-		change_state(PowerStateMachine::PowerDownExit, machine_state)
-	    }
-	    PowerStateMachine::PowerDownExit => {
-		power_down_exit(&cpu, &exint, &timer0);
+	    PowerStateMachine::PowerDown => {
+		#[cfg(debug_assertions)]
+		serial.flush().ok();
+		// cpu goes to sleep, then woken up
+		adc = power_down_mode(&cpu, &exint, &timer0, adc);
+
+		#[cfg(debug_assertions)]
+		ufmt::uwrite!(serial, "prr:").void_unwrap();
+		#[cfg(debug_assertions)]
+		send_reg(&mut serial, 0x64);
+
 		change_state(PowerStateMachine::WaitEntry, machine_state)
 	    }
 	    PowerStateMachine::ButtonPress => {
-		interrupt::free(|cs| { BUTTONSTATE.start_timer(cs) });
+		interrupt::free(|cs| {
+		    if let Some(ref mut bs) = BUTTONSTATEHANDLE.borrow(cs).borrow_mut().deref_mut() {
+			bs.start_timer(cs);
+		    } else { () }
+		});
 		change_state(PowerStateMachine::ButtonRelease, machine_state)
 	    }
 	    PowerStateMachine::ButtonRelease => {
-		match test_button_release() {
+		match interrupt::free(|cs| {
+		    if let Some(ref mut bs) = BUTTONSTATEHANDLE.borrow(cs).borrow_mut().deref_mut() {
+			bs.test_button_release(cs)
+		    } else { ButtonRelease::Down }
+		}) {
 		    ButtonRelease::UpLong => {
 			match machine_state.1 {
 			    PowerStateMachine::Wait => {
@@ -558,6 +578,12 @@ fn main() -> ! {
 	    };
 	    match adc_result {
 		Ok(adc_reading) => {
+
+		    #[cfg(debug_assertions)]
+		    ufmt::uwrite!(serial, "adc_val:").void_unwrap();
+		    #[cfg(debug_assertions)]
+		    send_u16(&mut serial, adc_reading);
+
 		    interrupt::free(|cs| unsafe {
 			REGISTERSHANDLE.set_value(
 			    current_channel.try_into().unwrap(), adc_reading, cs);
@@ -589,9 +615,6 @@ fn main() -> ! {
 // interrupt handler for Timer0 overflow
 #[interrupt(atmega328p)]
 fn TIMER0_OVF() {
-    // static variable to hold the button pin
-    static mut BUTTONPIN: Option<chart_plotter_hat::hal::port::portd::PD2<TriState>> = None;
-
     // create unneeded interrupt context for static functions
     // unneeded because we are in interrupt and can't be interrupted
     // again in avr
@@ -599,15 +622,8 @@ fn TIMER0_OVF() {
 
 	WAITCOUNTER.increment(cs);
 
-	unsafe {
-	    // pin already transferred to this function
-	    if let Some(but) = &BUTTONPIN {
-		BUTTONSTATE.timer0_overflow(but.is_high().unwrap(), cs);
-	    }
-	    else {
-		// transfer pin to this function
-		BUTTONPIN.replace(BUTTON_GPIO.borrow(cs).replace(None).unwrap());
-	    }
+	if let Some(ref mut bs) = BUTTONSTATEHANDLE.borrow(cs).borrow_mut().deref_mut() {
+	    bs.timer0_overflow(cs);
 	}
     });
 }
@@ -624,7 +640,7 @@ fn INT0() {
 
 //==========================================================
 
-// interrupt handler for SPI Serial Transmission Complete
+// interrupt handler for SPI Transmission Complete
 #[interrupt(atmega328p)]
 fn SPI_STC() {
     // create unneeded interrupt context for static functions
@@ -632,7 +648,7 @@ fn SPI_STC() {
     // again in avr
     interrupt::free(move |cs| {
 	if let Some(ref mut ss) = SPISTATEHANDLE.borrow(cs).borrow_mut().deref_mut() {
-	    ss.serial_transmission_complete(cs);
+	    ss.spi_transmission_complete(cs);
 	}
     });
 }

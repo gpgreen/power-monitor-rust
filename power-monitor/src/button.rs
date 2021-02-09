@@ -1,69 +1,87 @@
 //!
 //! Copyright 2021 Greg Green <ggreen@bit-builder.com>
 //!
-use core::cell::UnsafeCell;
 use avr_hal_generic::avr_device::interrupt;
+use chart_plotter_hat::prelude::*;
+use chart_plotter_hat::hal as hal;
+use hal::port::mode::TriState;
 
 const BUTTON_TIMER_DURATION: i8 = 25;
+
+//==========================================================
+
+pub enum ButtonRelease {
+    Down,
+    UpShort,
+    UpLong,
+}
 
 // capture button state, a mask for detecting position, and a timer
 // for measuring position duration
 pub struct ButtonState {
-    button_timer: UnsafeCell<i8>,
-    button_mask: UnsafeCell<u8>,
+    button: hal::port::portd::PD2<TriState>,
+    button_timer: i8,
+    button_mask: u8,
 }
 
-// initialize the state
-pub const BUTTON_STATE_INIT: ButtonState = ButtonState{
-    button_timer: UnsafeCell::new(-1), button_mask: UnsafeCell::new(0xFF)};
-
 impl ButtonState {
-    // by requiring a CriticalSection passed in, we are inside a CriticalSection
-    // and so using unsafe is ok for this block
-    pub fn timer0_overflow(&self, pin_state: bool, _cs: &interrupt::CriticalSection) {
-	unsafe {
-	    *self.button_mask.get() <<= 1;
-	    if pin_state {
-		*self.button_mask.get() |= 1;
-	    }
-	    let count = *self.button_timer.get();
-	    if count >= 0 && count < i8::max_value() {
-		*self.button_timer.get() += 1;
-	    }
+    pub fn new(buttonpin: hal::port::portd::PD2<TriState>) -> ButtonState {
+	ButtonState {
+	    button: buttonpin,
+	    button_timer: -1,
+	    button_mask: 0xFF,
+	}
+    }
+    
+    pub fn timer0_overflow(&mut self, _cs: &interrupt::CriticalSection) {
+	self.button_mask <<= 1;
+	if self.button.is_high().unwrap() {
+	    self.button_mask |= 1;
+	}
+	if self.button_timer >= 0 && self.button_timer < i8::max_value() {
+	    self.button_timer += 1;
 	}
     }
 
     // reset the state to initial conditions
-    pub fn reset(&self, _cs:  &interrupt::CriticalSection) {
-	unsafe {
-	    *self.button_timer.get() = -1;
-	}
+    pub fn reset(&mut self, _cs:  &interrupt::CriticalSection) {
+	self.button_timer = -1;
     }
 
     // has button timer exceeded limit?
-    pub fn start_timer(&self, _cs:  &interrupt::CriticalSection) {
-	unsafe {
-	    *self.button_timer.get() = 0;
-	}
+    pub fn start_timer(&mut self, _cs:  &interrupt::CriticalSection) {
+	self.button_timer = 0;
     }
 
     // has button timer exceeded limit?
     pub fn timeout(&self, _cs:  &interrupt::CriticalSection) -> bool {
-	unsafe {
-	    *self.button_timer.get() >= BUTTON_TIMER_DURATION
-	}
+	self.button_timer >= BUTTON_TIMER_DURATION
     }
 
     // is the button down
     pub fn is_down(&self, _cs: &interrupt::CriticalSection) -> bool {
-	unsafe { *self.button_mask.get() == 0x00 }
+	self.button_mask == 0x00
     }
 
     // is the button up
     pub fn is_up(&self, _cs: &interrupt::CriticalSection) -> bool {
-	unsafe { *self.button_mask.get() == 0xFF }
+	self.button_mask == 0xFF
     }
     
+    pub fn test_button_release(&mut self, cs: &interrupt::CriticalSection) -> ButtonRelease {
+	if self.is_up(cs) {
+	    let newstate = if self.timeout(cs) {
+		ButtonRelease::UpLong
+	    } else {
+		ButtonRelease::UpShort
+	    };
+	    self.reset(cs);
+	    newstate
+	} else {
+	    ButtonRelease::Down
+	}
+    }
+
 }
 
 // Required to allow static Button

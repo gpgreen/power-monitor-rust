@@ -73,31 +73,6 @@ pub mod prelude {
     pub use crate::hal::usart::BaudrateArduinoExt as _;
 }
 
-#[cfg(debug_assertions)]
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-//    use ufmt;
-    use prelude::*;
-    
-    let mut serial: Serial<hal::port::mode::Floating> =
-        unsafe { core::mem::MaybeUninit::uninit().assume_init() };
-
-   ufmt::uwriteln!(&mut serial, "Firmware panic!\r").void_unwrap();
-
-    if let Some(loc) = info.location() {
-        ufmt::uwriteln!(
-            &mut serial,
-            "  At {}:{}:{}\r",
-            loc.file(),
-            loc.line(),
-            loc.column(),
-        )
-        .void_unwrap();
-    }
-
-    loop {}
-}
-
 /// Busy-Delay
 ///
 /// **Note**: For just delaying, using [`chart_plotter_hat::delay_ms()`][delay_ms] or

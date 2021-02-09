@@ -4,11 +4,6 @@ version = "0.1.0"
 authors = ["Greg Green <ggreen@bit-builder.com>"]
 edition = "2018"
 
-[features]
-default = ["rt"]
-rt = ["atmega328p-hal/rt"]
-proto-board = []
-
 [dependencies]
 ufmt = "0.1.0"
 
@@ -24,7 +19,7 @@ rev = "206ff87bdc38afcffd9db1c9326c0d4d9487cb14"
 [dependencies.atmega328p-hal]
 git = "https://github.com/Rahix/avr-hal"
 rev = "206ff87bdc38afcffd9db1c9326c0d4d9487cb14"
-features = ["atmega328p", "adc-pins"]
+features = ["rt", "atmega328p", "adc-pins"]
 
 [dev-dependencies]
 panic-halt = "0.2.0"

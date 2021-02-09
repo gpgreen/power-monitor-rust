@@ -84,19 +84,15 @@ avr_hal_generic::impl_board_pins! {
         pub led1: portb::pb0::PB0,
         /// `LED2`
         ///
-	#[cfg(feature = "proto-board")]
         pub led2: portd::pd7::PD7,
         /// `LED3`
         ///
-	#[cfg(feature = "proto-board")]
         pub led3: portd::pd6::PD6,
         /// `LED4`
         ///
-	#[cfg(feature = "proto-board")]
         pub led4: portd::pd5::PD5,
         /// `LED5`
         ///
-	#[cfg(feature = "proto-board")]
         pub led5: portd::pd3::PD3,
     }
 }

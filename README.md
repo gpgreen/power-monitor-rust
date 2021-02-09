@@ -67,19 +67,19 @@ program`
 ## Chart Plotter Hat Hardware Changes
 
 - Rev B
-LED1 attached to PB0
-LED removed from SHUTDOWN
-SHUTDOWN added pulldown
-MCU_RUNNING moved from PD3 to PB1
-MCU_RUNNING added pulldown
-LC circuit added to AVCC
-Optional 12V ADC measurement to ADC7
+ - LED1 attached to PB0
+ - LED removed from SHUTDOWN
+ - SHUTDOWN added pulldown
+ - MCU_RUNNING moved from PD3 to PB1
+ - MCU_RUNNING added pulldown
+ - LC circuit added to AVCC
+ - Optional 12V ADC measurement to ADC7
 
-- Rev A
-Original
+- Rev A (original)
 
 ## PIN LAYOUT
 ```
+                 [proto-board]
                 ATmega328P-28P3            
             +--------------------+         
             |                    |         
@@ -105,7 +105,7 @@ Original
             |                          |        
         3.3-|4  VCC              PB0 12|-LED1   
         3.3-|18 AVCC             PB1 13|-MCU_RUNNING
-        CAP-|20 AREF             PB2 14|-CS
+   CAP->GND-|20 AREF             PB2 14|-CS
         GND-|3  GND              PB3 15|-MOSI   
             |                    PB4 16|-MISO   
          A6-|19 ADC6             PB5 17|-SCK    

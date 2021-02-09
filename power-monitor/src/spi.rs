@@ -192,11 +192,12 @@ impl SpiState {
 	self.initialize(cs);
     }
 
+    #[inline(always)]
     pub fn send_byte(&mut self, b: u8, _cs: &interrupt::CriticalSection) {
 	unsafe { self.spi.spdr.write(|w| w.bits(b)); }
     }
     
-    pub fn serial_transmission_complete(&mut self, cs: &interrupt::CriticalSection) {
+    pub fn spi_transmission_complete(&mut self, cs: &interrupt::CriticalSection) {
 	let recvd = self.spi.spdr.read().bits();
 	let mut change_eeprom = EEPROMState::NoChange;
 	match self.state {

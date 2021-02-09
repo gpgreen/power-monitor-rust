@@ -22,7 +22,7 @@ then
 fi
 
 if [ $OS = "Linux" ]; then
-    SERIAL_PORT="/dev/ttyACM0"
+    SERIAL_PORT=""
 elif [ $OS = "Mac" ]; then
     SERIAL_PORT="/dev/cu.usbmodem146201"
 else
@@ -55,4 +55,8 @@ printf "\n"
 printf "Attempting to flash ...\n"
 printf "\n"
 
-avrdude -q  -patmega328p -carduino -P"${SERIAL_PORT}" -D "-Uflash:w:$1:e"
+if [ "x${SERIAL_PORT}" = "x" ]; then
+    avrdude -q  -patmega328p -cusbtiny -D "-Uflash:w:$1:e"
+else
+    avrdude -q  -patmega328p -cusbtiny -P"${SERIAL_PORT}" -D "-Uflash:w:$1:e"
+fi
