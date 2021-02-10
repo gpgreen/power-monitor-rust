@@ -122,12 +122,14 @@ pub struct SpiState {
     address: u8,
     send2: u8,
     #[cfg(feature = "proto-board")]
+    #[cfg(debug_assertions)]
     led5: hal::port::portd::PD3<Output>,
 }
 
 impl SpiState {
     
     #[cfg(feature = "proto-board")]
+    #[cfg(debug_assertions)]
     pub fn new(spidev: avr_device::atmega328p::SPI,
 	       sckpin: hal::port::portb::PB5<Input<PullUp>>,
 	       misopin: hal::port::portb::PB4<Output>,
@@ -150,7 +152,7 @@ impl SpiState {
 	}
     }
 
-    #[cfg(not(feature = "proto-board"))]
+    #[cfg(not(debug_assertions))]
     pub fn new(spidev: avr_device::atmega328p::SPI,
 	       sckpin: hal::port::portb::PB5<Input<PullUp>>,
 	       misopin: hal::port::portb::PB4<Output>,
@@ -185,6 +187,7 @@ impl SpiState {
 	    w.spie().clear_bit()
 	});
 	#[cfg(feature = "proto-board")]
+	#[cfg(debug_assertions)]
 	self.led5.set_low().void_unwrap();
     }
     
@@ -242,6 +245,7 @@ impl SpiState {
 		self.address = recvd;
 		self.state = SpiStateMachine::SecondByte;
 		#[cfg(feature = "proto-board")]
+		#[cfg(debug_assertions)]
 		self.led5.set_high().void_unwrap();
 	    }
 	    SpiStateMachine::SecondByte => {
@@ -267,6 +271,7 @@ impl SpiState {
 		self.send_byte(0, cs);
 		self.state = SpiStateMachine::Start;
 		#[cfg(feature = "proto-board")]
+		#[cfg(debug_assertions)]
 		self.led5.set_low().void_unwrap();
 	    }
 	}

@@ -1,5 +1,5 @@
-//!
-//! Copyright 2021 Greg Green <ggreen@bit-builder.com>
+//! routines associated with button state and button
+//! press determination
 //!
 use avr_hal_generic::avr_device::interrupt;
 use chart_plotter_hat::prelude::*;
