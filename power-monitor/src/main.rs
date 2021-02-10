@@ -70,7 +70,6 @@ fn main() -> ! {
     let mut hdwr = setup();
     loop {
 	hdwr = process_fsm(hdwr);
-	//	chart_plotter_hat::delay_us(10000);
     }
 }
 
@@ -356,23 +355,41 @@ fn power_down_mode(hdwr: Hardware) -> Hardware {
 
     // release hal adc so we can turn it off
     let adcp = hdwr.adc.into_inner().release();
+
+    // delay for a bit, so that usart can finish any transmission
+    #[cfg(debug_assertions)]
+    chart_plotter_hat::delay_ms(10);
     
-    // modules power off
+    // stop timer0 ovf interrupt
+    hdwr.timer0.timsk0.modify(|_, w| w.toie0().clear_bit());
+    
+    // disable modules
     interrupt::free(|cs| {
 	if let Some(ref mut ss) = SPISTATEHANDLE.borrow(cs).borrow_mut().deref_mut() {
 	    ss.pre_power_down(cs);
 	}
 	adcp.adcsra.reset();
+	//hdwr.timer0.tccr0b.modify(|_, w| w.cs0().no_clock() );
+	// get a pointer to usart configuration  (UCSR0B)
+	// doing this instead of the release then init as was done for adc
+	// as release doesn't work on Usart0. In any case this is
+	// debug only
+	#[cfg(debug_assertions)]
+	unsafe {
+	    let usartp = &mut *(0xC1 as *mut u8);
+	    // disable usart
+	    core::ptr::write_volatile(usartp, 0)
+	}
     });
     
     // turn off clocks
     hdwr.cpu.prr.modify(|_, w| {
+	#[cfg(debug_assertions)]
+	w.prusart0().set_bit();
+	w.prtim0().set_bit();
 	w.prspi().set_bit();
 	w.pradc().set_bit()
     });
-    
-    // stop timer0 ovf interrupt
-    hdwr.timer0.timsk0.modify(|_, w| w.toie0().clear_bit());
     
     // set INTO interrupt
     hdwr.exint.eimsk.modify(|_, w| w.int0().set_bit());
@@ -402,22 +419,34 @@ fn power_down_mode(hdwr: Hardware) -> Hardware {
     // stop INTO interrupt
     hdwr.exint.eimsk.modify(|_, w| w.int0().clear_bit());
 
-    // set timer0 ovf interrupt
-    hdwr.timer0.timsk0.modify(|_, w| w.toie0().set_bit());
-
     // turn on clocks
     hdwr.cpu.prr.modify(|_, w| {
+	#[cfg(debug_assertions)]
+	w.prusart0().clear_bit();
+	w.prtim0().clear_bit();
 	w.prspi().clear_bit();
 	w.pradc().clear_bit()
     });
-    
+
+    // enable modules
     interrupt::free(|cs| {
 	if let Some(ref mut ss) = SPISTATEHANDLE.borrow(cs).borrow_mut().deref_mut() {
 	    ss.post_power_down(cs);
 	}
+	//hdwr.timer0.tccr0b.modify(|_, w| w.cs0().prescale_256() );
+	#[cfg(debug_assertions)]
+	unsafe {
+	    // get a pointer to usart configuration (UCSR0B)
+	    let usartp = &mut *(0xC1 as *mut u8);
+	    // enable usart tx and rx, interrupts disabled
+	    core::ptr::write_volatile(usartp, 0x60)
+	}
 	// start wakeup timer
 	WAITCOUNTER.start_timer(cs);
     });
+
+    // set timer0 ovf interrupt
+    hdwr.timer0.timsk0.modify(|_, w| w.toie0().set_bit());
 
     // SHUTDOWN pin pull up off, to output
     //SHUTDOWN_PORT &= ~(_BV(SHUTDOWN));
@@ -605,12 +634,6 @@ fn process_fsm(mut hdwr: Hardware) -> Hardware {
 	    hdwr.serial.flush().ok();
 	    // cpu goes to sleep, then woken up
 	    hdwr = power_down_mode(hdwr);
-
-	    #[cfg(debug_assertions)]
-	    ufmt::uwrite!(hdwr.serial, "prr:").void_unwrap();
-	    #[cfg(debug_assertions)]
-	    send_reg(&mut hdwr.serial, 0x64);
-
 	    change_state(PowerStateMachine::WaitEntry, hdwr.machine_state)
 	}
 	PowerStateMachine::ButtonPress => {
@@ -765,12 +788,10 @@ fn process_fsm(mut hdwr: Hardware) -> Hardware {
 #[interrupt(atmega328p)]
 fn TIMER0_OVF() {
     // create unneeded interrupt context for static functions
-    // unneeded because we are in interrupt and can't be interrupted
-    // again in avr
+    // unneeded because we are in interrupt which aren't nested
+    // in avr
     interrupt::free(move |cs| {
-
 	WAITCOUNTER.increment(cs);
-
 	if let Some(ref mut bs) = BUTTONSTATEHANDLE.borrow(cs).borrow_mut().deref_mut() {
 	    bs.timer0_overflow(cs);
 	}
@@ -793,8 +814,8 @@ fn INT0() {
 #[interrupt(atmega328p)]
 fn SPI_STC() {
     // create unneeded interrupt context for static functions
-    // unneeded because we are in interrupt and can't be interrupted
-    // again in avr
+    // unneeded because we are in interrupt which aren't nested
+    // in avr
     interrupt::free(move |cs| {
 	if let Some(ref mut ss) = SPISTATEHANDLE.borrow(cs).borrow_mut().deref_mut() {
 	    ss.spi_transmission_complete(cs);
