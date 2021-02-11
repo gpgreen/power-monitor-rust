@@ -128,8 +128,7 @@ pub struct SpiState {
 
 impl SpiState {
     
-    #[cfg(feature = "proto-board")]
-    #[cfg(debug_assertions)]
+    #[cfg(all(feature = "proto-board", debug_assertions))]
     pub fn new(spidev: avr_device::atmega328p::SPI,
 	       sckpin: hal::port::portb::PB5<Input<PullUp>>,
 	       misopin: hal::port::portb::PB4<Output>,
@@ -152,7 +151,7 @@ impl SpiState {
 	}
     }
 
-    #[cfg(not(debug_assertions))]
+    #[cfg(any(not(debug_assertions), not(feature = "proto-board")))]
     pub fn new(spidev: avr_device::atmega328p::SPI,
 	       sckpin: hal::port::portb::PB5<Input<PullUp>>,
 	       misopin: hal::port::portb::PB4<Output>,
@@ -196,7 +195,7 @@ impl SpiState {
     }
 
     #[inline(always)]
-    pub fn send_byte(&mut self, b: u8, _cs: &interrupt::CriticalSection) {
+    fn send_byte(&mut self, b: u8, _cs: &interrupt::CriticalSection) {
 	unsafe { self.spi.spdr.write(|w| w.bits(b)); }
     }
     

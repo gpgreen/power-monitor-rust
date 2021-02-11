@@ -44,6 +44,7 @@ NAME="$(basename "$1")"
 SIZE_TEXT="$(avr-size "$1" | tail -1 | cut -f1)"
 SIZE_DATA="$(avr-size "$1" | tail -1 | cut -f2)"
 SIZE_BSS="$(avr-size "$1" | tail -1 | cut -f3)"
+TMPHEX="$(mktemp)"
 
 printf "\n"
 printf "Program:             %s\n" "$NAME"
@@ -55,8 +56,12 @@ printf "\n"
 printf "Attempting to flash ...\n"
 printf "\n"
 
+# make the hex file, elf format has issues with atmega328p and avrdude, the verify step
+# fails sometimes
 if [ "x${SERIAL_PORT}" = "x" ]; then
-    avrdude -q  -patmega328p -cusbtiny -D "-Uflash:w:$1:e"
+    echo "Creating hex file: $TMPHEX"
+    avr-objcopy -O ihex -R .eeprom $1 "${TMPHEX}"
+    avrdude -q  -patmega328p -cusbtiny -D "-Uflash:w:$TMPHEX:i"
 else
     avrdude -q  -patmega328p -cusbtiny -P"${SERIAL_PORT}" -D "-Uflash:w:$1:e"
 fi

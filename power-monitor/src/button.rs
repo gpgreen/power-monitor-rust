@@ -4,7 +4,7 @@
 use avr_hal_generic::avr_device::interrupt;
 use chart_plotter_hat::prelude::*;
 use chart_plotter_hat::hal as hal;
-use hal::port::mode::TriState;
+use hal::port::mode::{Input, Floating};
 
 const BUTTON_TIMER_DURATION: i8 = 25;
 
@@ -19,13 +19,13 @@ pub enum ButtonRelease {
 // capture button state, a mask for detecting position, and a timer
 // for measuring position duration
 pub struct ButtonState {
-    button: hal::port::portd::PD2<TriState>,
+    button: hal::port::portd::PD2<Input<Floating>>,
     button_timer: i8,
     button_mask: u8,
 }
 
 impl ButtonState {
-    pub fn new(buttonpin: hal::port::portd::PD2<TriState>) -> ButtonState {
+    pub fn new(buttonpin: hal::port::portd::PD2<Input<Floating>>) -> ButtonState {
 	ButtonState {
 	    button: buttonpin,
 	    button_timer: -1,

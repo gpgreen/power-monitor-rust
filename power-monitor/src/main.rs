@@ -38,6 +38,7 @@ struct Hardware {
     timer0: chart_plotter_hat::pac::TC0,
     adc: RefCell<chart_plotter_hat::adc::Adc>,
     led1: hal::port::portb::PB0<Output>,
+    // MCU_RUNNING, input, external pulldown
     mcu_running_pin: hal::port::portb::PB1<Input<Floating>>,
     enable_pin: hal::port::portd::PD4<Output>,
     shutdown_pin: hal::port::portb::PB6<Output>,
@@ -211,16 +212,29 @@ fn setup() -> Hardware {
 	w.prtwi().set_bit()
     });
     #[cfg(not(debug_assertions))]
-    cpu.prr.write(|w| {
+    cpu.prr.modify(|_,w| {
 	w.prusart0().set_bit()
     });
     // turn off analog comparator
     let ac = dp.AC;
     ac.acsr.write(|w| w.acd().set_bit() );
-    
-    let exint = dp.EXINT;
-    
+
+    // sort out the pins
     let mut pins = chart_plotter_hat::Pins::new(dp.PORTB, dp.PORTC, dp.PORTD);
+
+    // turn on pullups on unused pins (proto-board, no unused pins)
+    #[cfg(not(debug_assertions))]
+    let _rx = pins.rx.into_pull_up_input(&mut pins.ddr);
+    #[cfg(not(debug_assertions))]
+    let _tx = pins.tx.into_pull_up_input(&mut pins.ddr);
+    #[cfg(not(debug_assertions))]
+    let _led2 = pins.led2.into_pull_up_input(&mut pins.ddr);
+    #[cfg(not(debug_assertions))]
+    let _led3 = pins.led3.into_pull_up_input(&mut pins.ddr);
+    #[cfg(not(debug_assertions))]
+    let _led4 = pins.led4.into_pull_up_input(&mut pins.ddr);
+    #[cfg(not(debug_assertions))]
+    let _led5 = pins.led5.into_pull_up_input(&mut pins.ddr);
     
     // LEDs, output
     let led1 = pins.led1.into_output(&mut pins.ddr);
@@ -237,17 +251,28 @@ fn setup() -> Hardware {
     #[cfg(debug_assertions)]
     let led5 = pins.led5.into_output(&mut pins.ddr);
     
-    // MCU_RUNNING, input, external pulldown
-    let mcu_running_pin = pins.mr;
-    
     // ENABLE, output
     let enable_pin = pins.en.into_output(&mut pins.ddr);
     
     // SHUTDOWN, output
     let shutdown_pin = pins.shutdown.into_output(&mut pins.ddr);
 
-    // BUTTON, tri-state input and output, external pullup
-    let button_pin = pins.button.into_tri_state(&mut pins.ddr);
+    // SPI pins
+    let sck = pins.sck.into_pull_up_input(&mut pins.ddr);
+    let miso = pins.miso.into_output(&mut pins.ddr);
+    let mosi = pins.mosi.into_pull_up_input(&mut pins.ddr);
+    let cs = pins.cs.into_pull_up_input(&mut pins.ddr);
+    // EEPROM, output, external pullup
+    let eeprom = pins.ep.into_output(&mut pins.ddr);
+
+    let a0 = pins.a0.into_analog_input(&mut adc);
+    let a1 = pins.a1.into_analog_input(&mut adc);
+    let a2 = pins.a2.into_analog_input(&mut adc);
+    let a3 = pins.a3.into_analog_input(&mut adc);
+    let a4 = pins.a4.into_analog_input(&mut adc);
+    let a5 = pins.a5.into_analog_input(&mut adc);
+
+    // now module setup
     
     // setup Timer0, CK/256, overflow interrupt enabled
     let timer0 = dp.TC0;
@@ -263,30 +288,15 @@ fn setup() -> Hardware {
 	57600.into_baudrate(),
     );
 
-    // SPI pins
-    let sck = pins.sck.into_pull_up_input(&mut pins.ddr);
-    let miso = pins.miso.into_output(&mut pins.ddr);
-    let mosi = pins.mosi.into_pull_up_input(&mut pins.ddr);
-    let cs = pins.cs.into_pull_up_input(&mut pins.ddr);
-    // EEPROM, output, external pullup
-    let eeprom = pins.ep.into_output(&mut pins.ddr);
-
     // setup adc, default is 128 clock division, and AVcc voltage reference
     let mut adc = chart_plotter_hat::adc::Adc::new(dp.ADC, Default::default());
-    let a0 = pins.a0.into_analog_input(&mut adc);
-    let a1 = pins.a1.into_analog_input(&mut adc);
-    let a2 = pins.a2.into_analog_input(&mut adc);
-    let a3 = pins.a3.into_analog_input(&mut adc);
-    let a4 = pins.a4.into_analog_input(&mut adc);
-    let a5 = pins.a5.into_analog_input(&mut adc);
 
-    #[cfg(feature = "proto-board")]
-    #[cfg(debug_assertions)]
+    #[cfg(all(feature = "proto-board", debug_assertions))]
     let mut spi_state = SpiState::new(dp.SPI, sck, miso, mosi, cs, eeprom, led5);
-    #[cfg(not(debug_assertions))]
+    #[cfg(any(not(debug_assertions), not(feature = "proto-board")))]
     let mut spi_state = SpiState::new(dp.SPI, sck, miso, mosi, cs, eeprom);
 
-    let button_state = ButtonState::new(button_pin);
+    let button_state = ButtonState::new(pins.button);
     
     interrupt::free(|cs| {
 	// transfer to static variable
@@ -302,6 +312,7 @@ fn setup() -> Hardware {
 	interrupt::enable();
     }
 
+    // print out some status
     #[cfg(debug_assertions)]
     ufmt::uwriteln!(&mut serial, "\r\nPowerMonitor Start\r").void_unwrap();
     
@@ -316,9 +327,9 @@ fn setup() -> Hardware {
     
     Hardware {
 	cpu: cpu,
-	exint: exint,
+	exint: dp.EXINT,
 	led1: led1,
-	mcu_running_pin: mcu_running_pin,
+	mcu_running_pin: pins.mr,
 	enable_pin: enable_pin,
 	shutdown_pin: shutdown_pin,
 	timer0: timer0,
@@ -433,7 +444,6 @@ fn power_down_mode(hdwr: Hardware) -> Hardware {
 	if let Some(ref mut ss) = SPISTATEHANDLE.borrow(cs).borrow_mut().deref_mut() {
 	    ss.post_power_down(cs);
 	}
-	//hdwr.timer0.tccr0b.modify(|_, w| w.cs0().prescale_256() );
 	#[cfg(debug_assertions)]
 	unsafe {
 	    // get a pointer to usart configuration (UCSR0B)

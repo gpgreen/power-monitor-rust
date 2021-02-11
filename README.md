@@ -84,8 +84,8 @@ program`
             +--------------------+         
             |                    |         
       RESET-|1  PC6        PC5 29|-ADC5    
-           -|2  PD0        PC4 27|-ADC4    
-           -|3  PD1        PC3 26|-ADC3    
+         RX-|2  PD0        PC4 27|-ADC4    
+         TX-|3  PD1        PC3 26|-ADC3    
      BUTTON-|4  PD2        PC2 25|-ADC2    
        LED5-|5  PD3        PC1 24|-ADC1    
      ENABLE-|6  PD4        PC0 23|-ADC0    
