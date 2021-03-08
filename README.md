@@ -56,9 +56,15 @@ avrdude -p atmega328p -c <your programmer here> -U lfuse:w:0xc2:m -U hfuse:w:0xd
 ```
 
 ## Firmware Load
+
 The compiled firmware (power-monitor-rust.hex) can be programmed into the hardware using
 ```
 avrdude -p atmega328p -c <your programmer here> -U flash:w:power-monitor-rust.hex
+```
+
+To create the hex file, use avr-objcopy
+```
+avr-objcopy -O ihex target/avr-atmega328p/release/power-monitor-rust.elf power-monitor-rust.hex
 ```
 
 This can also be done with the makefile target 'program', or `make

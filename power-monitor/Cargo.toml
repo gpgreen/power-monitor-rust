@@ -29,7 +29,7 @@ rev = "206ff87bdc38afcffd9db1c9326c0d4d9487cb14"
 features = ["atmega328p"]
 
 [patch.crates-io]
-avr-device = { path = "/spare/export/src/rust/src/avr-device" }
+avr-device = { path = "/spare/export/src/rust/avr-device" }
 
 [profile.dev]
 panic = "abort"
